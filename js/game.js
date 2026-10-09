@@ -737,7 +737,7 @@
     race.lapTainted = true;
     const N = T.n;
     race.cp = p.i >= Math.floor(N * 2 / 3) ? 2 : p.i >= Math.floor(N / 3) ? 1 : 0;
-    announce('Rejoined behind ' + (last.name || last.drv.code));
+    announce('Rejoined behind ' + (last.name || last.drv.name));
   }
   function shiftUp() { if (car.gear >= 1 && car.gear < 8) { car.gear++; car.shiftTimer = 0.06; } }
   // Down a gear at any speed (no lockout: an over-revving engine just brakes harder).
@@ -795,7 +795,9 @@
     // in a gravel trap can still drive out.
     const WX = WEATHERS[weather];
     const grip = (S.grip[0] + S.grip[1] * v * v) * dirty * (car.offTrack ? Math.max(WX.grip, 0.85) : WX.grip);   // traction / braking
-    const cornerGrip = (S.turn[0] + S.turn[1] * v * v) * dirty * WX.grip;    // track: ~2 g slow, ~5 g at 300 km/h
+    // Phones: twice the turning grip on grass, sand and gravel, as tilt steering made it too hard to drive back out
+    const offGrip = isTouch && ['grass', 'sand', 'gravel'].includes(car.surface) ? 2 : 1;
+    const cornerGrip = (S.turn[0] + S.turn[1] * v * v) * dirty * WX.grip * offGrip;    // track: ~2 g slow, ~5 g at 300 km/h
     let nv;
 
     // H-shifter: positions 1-5 pick gears 1-5; position 6 covers 6th-8th (shifted automatically,
@@ -1002,10 +1004,21 @@
     else if (n === 3) announce('Black and white flag. Track limits. The next one is a penalty.');
     else { race.penalty += 5; announce('Five second penalty for track limits. ' + race.penalty + ' seconds in total.'); }
   }
+  // A man's voice for race control. Voices don't say whether they're male, so pick one by name from
+  // those built into iPhones / Macs, Windows, Chrome and Android (in order of preference); failing
+  // that any English voice, with the pitch pulled down a little.
+  const MALE_VOICES = ['Aaron', 'Daniel', 'Arthur', 'Alex', 'Gordon', 'Rishi', 'Tom',
+    'Microsoft Guy', 'Microsoft Andrew', 'Microsoft Brian', 'Microsoft Christopher', 'Microsoft Eric', 'Microsoft Ryan',
+    'Microsoft David', 'Microsoft Mark', 'Google UK English Male', 'en-us-x-iom', 'en-us-x-iol', 'en-us-x-tpd', 'en-gb-x-rjs', 'Fred'];
+  function raceVoice() {
+    const en = speechSynthesis.getVoices().filter(v => /^en/i.test(v.lang));
+    for (const name of MALE_VOICES) { const v = en.find(v => v.name.startsWith(name)); if (v) return v; }
+    return en.find(v => /male/i.test(v.name) && !/female/i.test(v.name)) || en.find(v => v.lang === 'en-US') || en[0];
+  }
   // Race control talks to you over the radio instead of putting banners over the screen: a
   // two-tone beep, then the message in the device's own voice, reworded to read aloud well.
   function announce(text) {
-    if (!text || muted) return;
+    if (!text || muted || !raceRadio) return;
     text = text
       .replace(/(\d+):(\d\d)\.(\d)\d\d/g, (_, m, sec, d) => (+m ? m + (+m === 1 ? ' minute ' : ' minutes ') : '') + +sec + '.' + d + ' seconds')
       .replace(/\(incl\. \+(\d+)s\)/, 'including $1 seconds of penalties')
@@ -1018,8 +1031,8 @@
     }
     if (!window.speechSynthesis) return;
     const u = new SpeechSynthesisUtterance(text);
-    u.lang = 'en-US'; u.rate = 1.1; u.pitch = 0.9; u.volume = 1;
-    const voice = speechSynthesis.getVoices().find(v => v.lang === 'en-US') || speechSynthesis.getVoices().find(v => /^en/.test(v.lang));
+    u.lang = 'en-US'; u.rate = 0.95; u.pitch = 0.85; u.volume = 1;
+    const voice = raceVoice();
     if (voice) u.voice = voice;
     // A newer call replaces one still being read. Safari drops a speak() straight after a cancel(),
     // so only cancel when something is actually talking, and give it a moment before speaking.
@@ -1035,14 +1048,14 @@
     race.lapStart = race.time;
     race.laps.push(lapTime);
     const rec = records[T.def.id] || (records[T.def.id] = { bestLap: null, bestRace: null });
-    let msg = 'Lap ' + race.laps.length + '  ' + fmt(lapTime), cls = '';
+    let note = 'Last lap ' + fmt(lapTime);
     const fair = !race.lapTainted;
     race.lapTainted = false;
     if (fair && (rec.bestLap == null || lapTime < rec.bestLap)) {
       rec.bestLap = lapTime; race.newLapRec = true;
-      msg = 'Track record!  ' + fmt(lapTime); cls = 'purple';
-    } else if (lapTime <= Math.min(...race.laps)) {
-      cls = 'green';
+      note = 'Track record! ' + fmt(lapTime);
+    } else if (race.laps.length > 1 && lapTime <= Math.min(...race.laps)) {
+      note = 'Fastest lap ' + fmt(lapTime);
     }
     if (race.laps.length >= RACE_LAPS) {
       race.state = 'finished';
@@ -1050,7 +1063,9 @@
       if (!race.tainted && (rec.bestRace == null || finalTime() < rec.bestRace)) { rec.bestRace = finalTime(); race.newRaceRec = true; }
       announce('FINISH!  ' + (field ? 'P' + playerPosition() + '  ' : '') + fmt(finalTime()) + (race.penalty ? '  (incl. +' + race.penalty + 's)' : ''));
     } else {
-      announce(msg + (race.laps.length === RACE_LAPS - 1 ? '\nFinal lap' : ''));
+      // Announce the lap you're starting ("Lap 2"), then how the one you just did went
+      const next = race.laps.length + 1;
+      announce((next === RACE_LAPS ? 'Final lap' : 'Lap ' + next) + '\n' + note);
     }
   }
 
@@ -1640,27 +1655,33 @@
   syncMusicBtns();
 
   // Race rules, on the menu and pause screens: track limits (warnings and penalties for going
-  // wide) and dirty tyres (less grip for a while after grass or gravel).
-  let trackLimits = true, dirtyTyres = true;
+  // wide), dirty tyres (less grip for a while after grass or gravel) and the race control voice.
+  let trackLimits = true, dirtyTyres = true, raceRadio = true;
   try {
     trackLimits = localStorage.getItem('trackLimits') !== 'off';
     dirtyTyres = localStorage.getItem('dirtyTyres') !== 'off';
+    raceRadio = localStorage.getItem('raceRadio') !== 'off';
   } catch (e) {}
   function syncRuleBtns() {
     document.querySelectorAll('.limits-btns button').forEach(b => b.classList.toggle('sel', (b.dataset.limits === 'on') === trackLimits));
     document.querySelectorAll('.dirt-btns button').forEach(b => b.classList.toggle('sel', (b.dataset.dirt === 'on') === dirtyTyres));
+    document.querySelectorAll('.radio-btns button').forEach(b => b.classList.toggle('sel', (b.dataset.radio === 'on') === raceRadio));
   }
   function ruleButton(b, apply) {
     b.onclick = () => {
       apply();
       if (!dirtyTyres) car.dirt = 0;
-      try { localStorage.setItem('trackLimits', trackLimits ? 'on' : 'off'); localStorage.setItem('dirtyTyres', dirtyTyres ? 'on' : 'off'); } catch (e) {}
+      try { localStorage.setItem('trackLimits', trackLimits ? 'on' : 'off'); localStorage.setItem('dirtyTyres', dirtyTyres ? 'on' : 'off'); localStorage.setItem('raceRadio', raceRadio ? 'on' : 'off'); } catch (e) {}
       syncRuleBtns();
       b.blur();   // so Space (overtake) doesn't re-press it later
     };
   }
   document.querySelectorAll('.limits-btns button').forEach(b => ruleButton(b, () => { trackLimits = b.dataset.limits === 'on'; }));
   document.querySelectorAll('.dirt-btns button').forEach(b => ruleButton(b, () => { dirtyTyres = b.dataset.dirt === 'on'; }));
+  document.querySelectorAll('.radio-btns button').forEach(b => ruleButton(b, () => {
+    raceRadio = b.dataset.radio === 'on';
+    if (!raceRadio && window.speechSynthesis) speechSynthesis.cancel();   // stop mid-sentence too
+  }));
   syncRuleBtns();
 
   // All cars as { s, d, v } for traffic checks and positions. Once you've seen the results of an
