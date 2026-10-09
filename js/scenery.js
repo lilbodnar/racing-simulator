@@ -314,13 +314,16 @@ function buildScenery(ctx) {
   tgeo.computeVertexNormals();
   const tTex = groundTex.clone(); tTex.needsUpdate = true;
   tTex.repeat.set(L / 11, L / 11);
-  group.add(new THREE.Mesh(tgeo, new THREE.MeshLambertMaterial({ map: tTex, vertexColors: true, polygonOffset: true, polygonOffsetFactor: 2, polygonOffsetUnits: 2 })));
+  const terrainMat = new THREE.MeshLambertMaterial({ map: tTex, vertexColors: true, polygonOffset: true, polygonOffsetFactor: 2, polygonOffsetUnits: 2 });
+  group.add(new THREE.Mesh(tgeo, terrainMat));
+  const groundMats = [terrainMat];   // ground surfaces, so snow can cover them
   // Far ground beyond the terrain patch: a frame round it, not one big plane - at the average
   // height it would otherwise slice through the low parts of a hilly circuit. The patch is already
   // at baseH along its edges, so the frame tucks just under them.
   const S = radius * 2 + 18000, IN = L / 2 - 60, OUT = S / 2;
   const farMat = new THREE.MeshLambertMaterial({ map: groundTex.clone() });
   farMat.map.needsUpdate = true; farMat.map.repeat.set(1 / 40, 1 / 40);
+  groundMats.push(farMat);
   for (const [w, d, ox, oz] of [[2 * OUT, OUT - IN, 0, (OUT + IN) / 2], [2 * OUT, OUT - IN, 0, -(OUT + IN) / 2],
     [OUT - IN, 2 * IN, (OUT + IN) / 2, 0], [OUT - IN, 2 * IN, -(OUT + IN) / 2, 0]]) {
     const geo = new THREE.PlaneGeometry(w, d).rotateX(-Math.PI / 2);
@@ -350,6 +353,7 @@ function buildScenery(ctx) {
     tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
     const mat = new THREE.MeshLambertMaterial({ map: tex, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 });
     group.add(new THREE.Mesh(ribbon(T.hw + 24, -T.hw - 24, 0.015, 12, null), mat));
+    if (theme.runoff === 'grass') groundMats.push(mat);
   }
 
   // ---------- Sky ----------
@@ -1271,7 +1275,7 @@ function buildScenery(ctx) {
   for (const L of theme.landmarks || []) LANDMARKS[L.type](L);
 
   return {
-    env, sky,
+    env, sky, groundMats,
     update(dt) { updaters.forEach(f => f(dt)); },
   };
 }

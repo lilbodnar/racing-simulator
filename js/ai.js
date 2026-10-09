@@ -58,9 +58,10 @@ function gridSlot(T, k) {
   return { s: -8 - 8 * k, d: (k % 2 ? -1 : 1) * Math.min(2.8, T.hw - 1.2) };
 }
 
-function createField(T, player, difficulty, laps, scene, shadowTex) {
+// weatherGrip: tyre grip multiplier from the weather (1 in the dry).
+function createField(T, player, difficulty, laps, scene, shadowTex, weatherGrip = 1) {
   const diff = DIFFICULTY[difficulty];
-  const profile = computeSpeedProfile(T, diff.grip);
+  const profile = computeSpeedProfile(T, diff.grip * weatherGrip);
   const N = T.n, maxD = T.hw - 1.2;
   // Grid: fastest drivers at the front.
   const order = DRIVERS.slice().sort((a, b) => b.skill - a.skill);

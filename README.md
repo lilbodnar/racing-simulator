@@ -28,6 +28,7 @@ Steering wheels, pedals, H-shifters and game controllers are supported too.
 - Grass, gravel and sand run-off, kerbs, dirty tyres
 - 2026-style track limits: black-and-white flag on the 3rd offence, 5 s penalty from the 4th
 - Car-to-car contact physics, overtake mode, lap and race records
+- Weather: sunny, cloudy, rainy, snowy or hurricane (gale-force gusts, lightning strikes and flying debris)
 
 ## Running locally
 

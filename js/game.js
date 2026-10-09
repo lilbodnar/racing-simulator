@@ -41,6 +41,8 @@
   let difficulty = 'medium';
   let field = null;                  // AI cars in a full-grid race
   let playerS = 0;                   // player's distance raced (same measure as the AI's s)
+  let weather = 'sunny';             // key of WEATHERS, remembered between visits
+  try { const w = localStorage.getItem('weather'); if (w in WEATHERS) weather = w; } catch (e) { /* storage blocked */ }
 
   const $ = id => document.getElementById(id);
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -67,6 +69,7 @@
   const sun = new THREE.DirectionalLight(0xffffff, 0.7);
   sun.position.set(300, 600, 200);
   scene.add(sun);
+  const wfx = createWeatherFx(scene);
 
   addEventListener('resize', () => {
     camera.aspect = innerWidth / innerHeight;
@@ -340,7 +343,8 @@
     const add = (geo, mat) => trackGroup.add(new THREE.Mesh(geo, mat));
 
     // Asphalt (white edge lines are painted in the texture); double-sided so bridges have an underside.
-    add(ribbon(T.hw, -T.hw, 0.03, 16, null), new THREE.MeshLambertMaterial({ map: roadTex, side: THREE.DoubleSide }));
+    T.roadMat = new THREE.MeshLambertMaterial({ map: roadTex, side: THREE.DoubleSide });
+    add(ribbon(T.hw, -T.hw, 0.03, 16, null), T.roadMat);
 
     // Kerbs
     const kerbMat = new THREE.MeshLambertMaterial({ map: kerbTex });
@@ -428,10 +432,34 @@
     scene.fog.color.setHex(env.fog[0]); scene.fog.near = env.fog[1]; scene.fog.far = env.fog[2];
     hemi.color.setHex(env.hemi[0]); hemi.groundColor.setHex(env.hemi[1]); hemi.intensity = env.hemi[2];
     sun.color.setHex(env.sun[0]); sun.intensity = env.sun[1]; sun.position.set(env.sun[2], env.sun[3], env.sun[4]);
-    buildReflections(env);
+    applyWeather();
 
     scene.add(trackGroup);
     prepareMinimap();
+  }
+
+  // Weather on top of the circuit's time of day: greyer, darker sky and shorter visibility the worse
+  // it gets, a wet (darker) road in the rain, snow on the ground.
+  function applyWeather() {
+    if (!scenery) return;
+    const W = WEATHERS[weather], env = scenery.env;
+    const base = new THREE.Color(env.fog[0]);
+    const lum = (base.r + base.g + base.b) / 3;                 // keeps the grey dark on a night race
+    const tint = W.tint === null ? base.clone() : new THREE.Color(W.tint).multiplyScalar(clamp(lum * 1.3, 0.15, 1));
+    const fogCol = base.clone().lerp(tint, W.mix);
+    const bg = W.sky ? new THREE.Color(env.horizon) : fogCol.clone();
+    scene.background = bg.clone();
+    scene.fog.color.copy(fogCol); scene.fog.near = env.fog[1] * W.fog; scene.fog.far = env.fog[2] * W.fog;
+    scenery.sky.visible = W.sky;
+    hemi.intensity = env.hemi[2] * (0.4 + 0.6 * W.light);
+    hemi.groundColor.setHex(W.snow ? 0xd8dde4 : env.hemi[1]);
+    sun.intensity = env.sun[1] * W.light;
+    T.roadMat.color.setHex(W.wet ? 0x74747c : 0xffffff);
+    const snowCol = new THREE.Color(0xc9d0d9).multiplyScalar(W.snow ? clamp(lum * 1.1, 0.12, 0.9) : 0);
+    T.roadMat.emissive.copy(snowCol).multiplyScalar(0.3);
+    scenery.groundMats.forEach(m => { m.emissive.copy(snowCol); m.color.setScalar(W.snow ? 0.35 : 1); });
+    buildReflections(W.sky ? env : { ...env, top: fogCol.getHex(), horizon: fogCol.getHex() });
+    wfx.set(weather, bg, fogCol);
   }
 
   // Reflection map for the cars' paint: a small sky / ground / light scene for this circuit's
@@ -640,8 +668,11 @@
     if (car.offTrack && car.surface !== 'runoff') car.dirt = Math.min(1, car.dirt + dt * 0.8 * Math.min(1, sp / 10));
     else car.dirt = Math.max(0, car.dirt - dt * sp / 600);
     const dirty = car.offTrack ? 1 : 1 - 0.25 * car.dirt;
-    const grip = (S.grip[0] + S.grip[1] * v * v) * dirty;          // traction / braking
-    const cornerGrip = (S.turn[0] + S.turn[1] * v * v) * dirty;    // track: ~2 g slow, ~5 g at 300 km/h
+    // Rain, snow and hurricanes cut grip. Off the track traction keeps most of it, so a car stuck
+    // in a gravel trap can still drive out.
+    const WX = WEATHERS[weather];
+    const grip = (S.grip[0] + S.grip[1] * v * v) * dirty * (car.offTrack ? Math.max(WX.grip, 0.85) : WX.grip);   // traction / braking
+    const cornerGrip = (S.turn[0] + S.turn[1] * v * v) * dirty * WX.grip;    // track: ~2 g slow, ~5 g at 300 km/h
     let nv;
 
     // H-shifter: positions 1-5 pick gears 1-5; position 6 covers 6th-8th (shifted automatically,
@@ -745,6 +776,15 @@
     if (car.vL) {
       car.vL = approach(car.vL, 0, cornerGrip * 0.8 * dt);
       if (nv > 0) nv = Math.max(0, nv - slide * grip * 0.25 * dt);
+    }
+    // Hurricane: a crosswind pushes the car sideways (beyond what the tyres hold in a gust), a
+    // head / tail wind slows or speeds it, and gusts twitch the tail.
+    if (WX.wind) {
+      const fx = Math.sin(car.h), fz = Math.cos(car.h), w = wfx.wind;
+      const wl = w.x * fz - w.z * fx, wf = w.x * fx + w.z * fz;
+      car.vL += wl * Math.abs(wl) * 0.0045 * dt;
+      if (nv > 2) nv = Math.max(0, nv + wf * Math.abs(wf) * 0.0012 * dt);
+      car.yawVel += ((Math.random() - 0.5) * 6 + Math.sign(wl) * 0.8) * w.gust * dt;
     }
     car.v = nv;
     const fx = Math.sin(car.h), fz = Math.cos(car.h);
@@ -884,7 +924,7 @@
     camera.fov = 68 + Math.min(14, sp * 0.14);
     camera.updateProjectionMatrix();
     crashShake = Math.max(0, crashShake - dt * 1.5);
-    const shake = SURFACES[car.surface].shake * Math.min(1, sp / 25) + crashShake;
+    const shake = SURFACES[car.surface].shake * Math.min(1, sp / 25) + crashShake + (WEATHERS[weather].wind ? 0.03 + wfx.wind.gust * 0.12 : 0);
     const jx = (Math.random() - 0.5) * shake, jy = (Math.random() - 0.5) * shake;
 
     if (camIdx === 0) {                 // Chase cam, above and behind
@@ -1038,7 +1078,8 @@
     sand:   { dust: new THREE.Color(0xd9bf8c), bits: new THREE.Color(0xb59a68), rate: 1.0, size: 1 },
     grass:  { dust: new THREE.Color(0x7a6a48), bits: new THREE.Color(0x3d7a2a), rate: 0.15, size: 0.5 },
   };
-  let bumpT = 0, bumpTarget = [0, 0, 0], sprayAcc = 0;
+  const MIST = new THREE.Color(0xc9d1da), POWDER = new THREE.Color(0xf4f7fb);
+  let bumpT = 0, bumpTarget = [0, 0, 0], sprayAcc = 0, wetAcc = 0;
   function surfaceEffects(dt) {
     const S = SURFACES[car.surface], sp = Math.abs(car.v) + Math.abs(car.vL);
     const amp = S.bump * Math.min(1, sp / 15);
@@ -1063,6 +1104,19 @@
         const back = 0.25 * sp;
         spawnDust(x, car.y + 0.3, z, -fx * back + (Math.random() - 0.5) * 3, -fz * back + (Math.random() - 0.5) * 3, spray.dust, spray.size);
         if (Math.random() < 0.6) spawnDebris(x, car.y + 0.2, z, 1, -fx, -fz, car.y, spray.bits);
+      }
+    }
+    // Spray off a wet road / powder off a snowy one, thrown up behind the rear wheels.
+    const WX = WEATHERS[weather];
+    if ((WX.wet || WX.snow) && !car.offTrack && sp > 12) {
+      wetAcc += sp * 0.1 * dt;
+      const fx = Math.sin(car.h), fz = Math.cos(car.h);
+      while (wetAcc > 1) {
+        wetAcc -= 1;
+        const s = Math.random() < 0.5 ? 1 : -1;
+        spawnDust(car.x + fz * 0.77 * s - fx * 2.4, car.y + 0.4, car.z - fx * 0.77 * s - fz * 2.4,
+          -fx * sp * 0.3 + wfx.wind.x * 0.4 + (Math.random() - 0.5) * 3, -fz * sp * 0.3 + wfx.wind.z * 0.4 + (Math.random() - 0.5) * 3,
+          WX.snow ? POWDER : MIST, 1.4);
       }
     }
     // Rumble / crunch
@@ -1290,6 +1344,9 @@
     const rec = records[T.def.id];
     $('h-rec').textContent = fmt(rec && rec.bestLap);
     $('hud-total').textContent = fmt(race.time);
+    const WX = WEATHERS[weather];
+    $('h-weather').textContent = WX.wind ? 'WIND ' + Math.round(wfx.wind.speed * 3.6) + ' KM/H' : WX.label.toUpperCase();
+    $('h-weather').className = WX.wind ? 'storm' : '';
     $('h-speed').textContent = Math.round(Math.abs(car.v) * 3.6);
     $('h-gear').textContent = car.neutral ? 'N' : car.gear === -1 ? 'R' : car.gear;
     $('ersfill').style.width = (car.ers * 100).toFixed(0) + '%';
@@ -1388,6 +1445,20 @@
   }
   document.querySelectorAll('#mode-btns button').forEach(b => { b.onclick = () => { raceMode = b.dataset.mode; buildPicker(); }; });
   document.querySelectorAll('#diff-btns button').forEach(b => { b.onclick = () => { difficulty = b.dataset.diff; buildPicker(); }; });
+  // Weather picker (pre-race screen): the scene behind the panel changes straight away.
+  function syncWeatherBtns() {
+    document.querySelectorAll('#weather-btns button').forEach(b => b.classList.toggle('sel', b.dataset.weather === weather));
+  }
+  document.querySelectorAll('#weather-btns button').forEach(b => {
+    b.onclick = () => {
+      weather = b.dataset.weather;
+      try { localStorage.setItem('weather', weather); } catch (e) {}
+      applyWeather();
+      syncWeatherBtns();
+      b.blur();
+    };
+  });
+  syncWeatherBtns();
 
   // Music style and race-music switch (track list and pause screen), remembered between visits.
   // Each style: [track list song, driver lobby song (pre-race/pause/results), in-race song].
@@ -1535,6 +1606,77 @@
     }
   }
 
+  // ---------- Hurricane ----------
+  // The gale shoves the AI cars too, now and then one gets thrown into a spin, and flying debris
+  // hits whatever car it meets: the heavier it is and the faster it's going, the bigger the hit.
+  let chaosT = 3;
+  const SPARK = new THREE.Color(0xfff3b0);
+  function knockAI(ai, dLat, dFwd, spin) {
+    ai.latV += dLat;
+    ai.v = Math.max(0, ai.v + dFwd);
+    ai.yawVel += spin;
+    if (Math.abs(ai.yawVel) > 2.2) ai.spinT = 2.5;
+  }
+  function hurricane(dt) {
+    if (!WEATHERS[weather].wind || race.state !== 'racing') return;
+    const w = wfx.wind;
+    if (field) {
+      for (const ai of field.cars) {
+        const i = trackPose(T, ai.s, ai.d).i, wl = w.x * T.nx[i] + w.z * T.nz[i];
+        ai.latV += wl * Math.abs(wl) * 0.0045 * dt;
+      }
+      if ((chaosT -= dt) <= 0) {
+        chaosT = 2 + Math.random() * 5;
+        const ai = field.cars[Math.floor(Math.random() * field.cars.length)];
+        if (ai.finish === null) knockAI(ai, (Math.random() - 0.5) * 16, -ai.v * 0.2, (Math.random() < 0.5 ? -1 : 1) * (1.5 + Math.random() * 3.5));
+      }
+    }
+    for (const f of wfx.flyers) {
+      if (!f.active || f.hitCd > 0) continue;
+      const dx = f.x - car.x, dz = f.z - car.z;
+      if (dx * dx + dz * dz < (f.r + 1.5) ** 2 && Math.abs(f.y - car.y - 0.5) < f.r + 0.8) {
+        const [wx, wz] = playerVel(), rvx = f.vx - wx, rvz = f.vz - wz, rs = Math.hypot(rvx, rvz) || 1;
+        const k = f.mass / (f.mass + MASS) * 1.4;
+        setPlayerVel(wx + rvx * k, wz + rvz * k);
+        car.yawVel += (Math.random() - 0.5) * k * 12;
+        impact(rs * k * 2 + 2, f.x, f.y, f.z, rvx / rs, rvz / rs);
+        f.vx = wx - rvx * 0.3; f.vz = wz - rvz * 0.3; f.vy = 5 + Math.random() * 7; f.hitCd = 1;
+        race.hitAt = race.time;                                   // knocked off by debris: not a track-limits offence
+        toast(f.kind.name === 'cow' ? 'MOOOOO!' : 'HIT BY FLYING ' + f.kind.name.toUpperCase() + '!', 'red', 1.3);
+        continue;
+      }
+      if (!field) continue;
+      for (const ai of field.cars) {
+        const ex = f.x - ai.x, ez = f.z - ai.z;
+        if (ex * ex + ez * ez > (f.r + 1.5) ** 2) continue;
+        const p = trackPose(T, ai.s, ai.d);
+        if (Math.abs(f.y - p.y - 0.5) > f.r + 0.8) continue;
+        const k = f.mass / (f.mass + MASS) * 1.4;
+        const tX = Math.sin(T.hd[p.i]), tZ = Math.cos(T.hd[p.i]);
+        knockAI(ai, (f.vx * T.nx[p.i] + f.vz * T.nz[p.i]) * k, (f.vx * tX + f.vz * tZ - ai.v) * k * 0.5, (Math.random() - 0.5) * k * 12);
+        spawnDebris(f.x, f.y, f.z, 12, -f.vx / 20, -f.vz / 20, p.y);
+        f.vx *= -0.3; f.vz *= -0.3; f.vy = 5 + Math.random() * 7; f.hitCd = 1;
+        break;
+      }
+    }
+  }
+  // Lightning landing next to the track: a shower of sparks, and any car close by gets thrown.
+  function lightningStrike(x, z) {
+    spawnDebris(x, car.y + 0.5, z, 40, 0, 0, car.y, SPARK);
+    const d = Math.hypot(x - car.x, z - car.z);
+    crashShake = Math.max(crashShake, 0.6 * clamp(1 - d / 40, 0.2, 1));
+    if (race.state !== 'racing') return;
+    if (d < 16) {
+      const [wx, wz] = playerVel(), ux = (car.x - x) / (d || 1), uz = (car.z - z) / (d || 1);
+      setPlayerVel(wx + ux * 9, wz + uz * 9);
+      car.yawVel += (Math.random() < 0.5 ? -1 : 1) * 2.5;
+      race.hitAt = race.time;
+    }
+    if (field) for (const ai of field.cars) {
+      if (Math.hypot(x - ai.x, z - ai.z) < 16) knockAI(ai, (Math.random() - 0.5) * 14, -ai.v * 0.3, (Math.random() < 0.5 ? -1 : 1) * 4);
+    }
+  }
+
   function openTrack(def) {
     $('loading').classList.remove('hidden');
     // Let the loading message paint before the (synchronous) scenery build.
@@ -1563,7 +1705,7 @@
     if (document.activeElement) document.activeElement.blur();   // so Space doesn't re-press the button
     if (field) { field.dispose(); field = null; }
     if (raceMode === 'grid') {
-      field = createField(T, selectedDriver, difficulty, RACE_LAPS, scene, shadowTex);
+      field = createField(T, selectedDriver, difficulty, RACE_LAPS, scene, shadowTex, WEATHERS[weather].grip);
       const slot = field.playerSlot;
       const i = ((Math.round(slot.s / T.total * T.n) % T.n) + T.n) % T.n;
       placeCarAt(i);
@@ -1579,6 +1721,7 @@
     car.otAvail = !field; car.otHold = 0;
     car.dirt = 0;
     debris.forEach(d => { d.life = 0; });
+    wfx.reset(); chaosT = 3;
     Object.assign(race, { state: 'countdown', time: 0, lapStart: 0, laps: [], cp: 0, cdT: 0, finishT: 0, newLapRec: false, newRaceRec: false, tainted: false, lapTainted: false, limits: 0, penalty: 0, wide: false, hitAt: -Infinity });
     race.goAt = 5 + 0.4 + Math.random() * 1.2;   // F1-style: five lights, then a random hold before lights out
     paused = false;
@@ -1591,7 +1734,7 @@
     race.state = 'results';
     const fastest = Math.min(...race.laps);
     const rec = records[T.def.id];
-    $('rs-meta').textContent = `${T.def.name} · ${selectedTeam.name} · ${RACE_LAPS} laps`;
+    $('rs-meta').textContent = `${T.def.name} · ${selectedTeam.name} · ${RACE_LAPS} laps · ${WEATHERS[weather].label}`;
     let html = '<table class="laps mono">';
     race.laps.forEach((t, i) => {
       html += `<tr class="${t === fastest ? 'fast' : ''}"><td>Lap ${i + 1}</td><td>${fmt(t)}</td></tr>`;
@@ -1684,6 +1827,8 @@
       else if (paused || race.state === 'prerace' || race.state === 'results') song = lobbySong;
       else if (raceMusic && inRace()) song = raceSong;
       LobbyMusic.setPlaying(muted ? null : song, audio.ctx, audio.master);
+      wfx.initAudio(audio.ctx, audio.master);
+      if (race.state === 'menu') wfx.sound(false);
     }
     if (race.state === 'menu') {   // dancing driver on the track list, dressed as the last driver raced
       const d = DRIVERS.find(x => x.code === lastDriverCode) || DRIVERS[0], tm = teamOf(d);
@@ -1722,6 +1867,7 @@
         field.sync(dt);
         carContacts();
       }
+      if (inRace()) hurricane(dt);
       if (race.state === 'finished') {
         race.finishT += dt;
         if (race.finishT > 2.5) showResults();
@@ -1735,6 +1881,7 @@
     updateDust(paused ? 0 : dt);
     if (field && !inRace()) field.sync(0);
     updateCamera(dt);
+    wfx.update(paused ? 0 : dt, camera.position, car, T.groundAt, !muted && !paused, lightningStrike);
     scenery.sky.position.copy(camera.position);
     updateAudio();
     renderer.render(scene, camera);

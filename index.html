@@ -68,6 +68,11 @@
   #menu .music-btns { margin: -10px 0 8px; }
   #menu .racemusic-btns { margin-bottom: 24px; }
   #pause .music-btns { margin-top: 16px; }
+  #weather-btns { flex-wrap: wrap; align-items: center; }
+  #weather-btns .lbl { color: #9aa7b4; font-size: 13px; letter-spacing: 1px; margin-right: 4px; }
+  #weather-btns button.storm { border-color: #7a1f1f; }
+  #weather-btns button.storm.sel { border-color: #ff4d4d; background: #3a1a1a; }
+  #h-weather.storm { color: #ff4d4d; font-weight: 800; }
   #h-pos { font-size: 26px; font-weight: 800; color: #ffd60a; }
   #prerace { justify-content: flex-start; padding-left: 3vw; }
   #prerace .panel-box { max-width: min(760px, 94vw); padding: 22px 26px; max-height: 96vh; overflow-y: auto; }
@@ -149,6 +154,7 @@
     <div class="row"><span class="lbl">LAST</span><span id="h-last">--</span></div>
     <div class="row"><span class="lbl">BEST (RACE)</span><span id="h-best">--</span></div>
     <div class="row"><span class="lbl">TRACK RECORD</span><span id="h-rec">--</span></div>
+    <div class="row"><span class="lbl">WEATHER</span><span id="h-weather">SUNNY</span></div>
   </div>
   <div id="hud-total" class="panel mono">0:00.000</div>
   <canvas id="minimap" width="440" height="440"></canvas>
@@ -225,6 +231,7 @@
     </div>
     <div class="seg" id="mode-btns"><button data-mode="solo">Solo</button><button data-mode="grid">Full grid (22 cars)</button></div>
     <div class="seg" id="diff-row"><span id="diff-btns"><button data-diff="easy">Easy</button><button data-diff="medium">Medium</button><button data-diff="hard">Hard</button></span></div>
+    <div class="seg" id="weather-btns"><span class="lbl">WEATHER</span><button data-weather="sunny">Sunny</button><button data-weather="cloudy">Cloudy</button><button data-weather="rainy">Rainy</button><button data-weather="snowy">Snowy</button><button data-weather="hurricane" class="storm">Hurricane</button></div>
     <div class="team-title" id="driver-title">Choose your team</div>
     <div id="team-grid"></div>
     <button class="btn primary" id="btn-start">START RACE</button><br>
@@ -267,6 +274,7 @@
 <script src="js/music.js"></script>
 <script src="js/wheel.js"></script>
 <script src="js/dancer.js"></script>
+<script src="js/weather.js"></script>
 <script src="js/game.js"></script>
 </body>
 </html>
