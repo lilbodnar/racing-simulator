@@ -621,7 +621,10 @@
     for (const k in keys) keys[k] = false;
     autoPause();
   });
-  document.addEventListener('visibilitychange', () => { if (document.hidden) autoPause(); });
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) autoPause();
+    else if (audio && audio.ctx.state !== 'running') audio.ctx.resume().catch(() => {});   // iPhones pause audio on lock / calls
+  });
 
   // On-screen touch controls. Each finger is tracked on its own, so you can hold gas and steer
   // together and slide a thumb from one button to the next.
@@ -665,10 +668,16 @@
     touchKeys();
   };
   const touchPad = $('touch');
-  // preventDefault stops Safari treating a second finger as a pinch-zoom, which cancelled both
-  // touches (Safari ignores touch-action: none), so gas + brake or brake + overtake couldn't be held together.
+  // Listened for on the whole page, not just the buttons: a touch's events all go to wherever it
+  // started, so a thumb landing just beside GAS and sliding on lit it up but its lift was never heard.
+  // preventDefault on the controls and game view stops Safari treating a second finger as a
+  // pinch-zoom, which cancelled both touches (Safari ignores touch-action: none). Menus are left
+  // alone so their buttons still click.
   for (const ev of ['touchstart', 'touchmove', 'touchend', 'touchcancel'])
-    touchPad.addEventListener(ev, e => { if (e.cancelable) e.preventDefault(); syncTouches(e); }, { passive: false });
+    addEventListener(ev, e => {
+      if (e.cancelable && e.target.closest && e.target.closest('#touch, #game')) e.preventDefault();
+      syncTouches(e);
+    }, { passive: false });
   // Pointer events handle the action buttons, and finger tracking for a mouse (testing on a PC).
   touchPad.addEventListener('pointerdown', e => {
     e.preventDefault();
@@ -2459,10 +2468,10 @@
     updateInputStatus();
     if (audio) {   // track list, driver lobby (pre-race, pause, results) and in-race songs of the chosen style
       const [menuSong, lobbySong, raceSong] = MUSIC_STYLES[musicStyle];
-      let song = null;
+      // Every screen has a song, so music on never goes quiet (in a race only if race music is off)
+      let song = lobbySong;
       if (race.state === 'menu') song = menuSong;
-      else if (paused || race.state === 'prerace' || race.state === 'results') song = lobbySong;
-      else if (raceMusic && inRace()) song = raceSong;
+      else if (!paused && inRace()) song = raceMusic ? raceSong : null;
       LobbyMusic.setPlaying(muted ? null : song, audio.ctx, audio.master);
       wfx.initAudio(audio.ctx, audio.master);
       if (race.state === 'menu') wfx.sound(false);

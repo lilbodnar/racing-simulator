@@ -728,6 +728,9 @@ const LobbyMusic = (() => {
     const wetSend = ctx.createGain(); wetSend.gain.value = 1.6; wet.connect(wetSend); wetSend.connect(verbIn);   // pads: extra reverb
     const S = { id, song, out, dry, bus, wet, bar: 0, next: ctx.currentTime + 0.1 };
     S.timer = setInterval(() => {
+      // Fell behind (busy phone, app in the background): carry on from now rather than cramming
+      // every missed bar into one instant and then sitting silent until the clock catches up.
+      if (S.next < ctx.currentTime) S.next = ctx.currentTime + 0.05;
       while (S.next < ctx.currentTime + 0.4) { song.bar(S, S.bar, S.next); S.bar++; S.next += song.barLen; }
     }, 50);
     session = S;
