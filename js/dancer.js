@@ -1,6 +1,7 @@
 // Little pixel-art driver with a giant helmeted head who dances in the top-left corner (top-right on phones) of the
 // track-selection screen, busting out cheesy dance moves on the beat of the menu song
-// (116 BPM): the lawnmower, the sprinkler, walk like an Egyptian, a booty shake and the YMCA.
+// (116 BPM): Deadpool's "Bye Bye Bye", the lawnmower, the sprinkler, walk like an Egyptian, a
+// booty shake and the YMCA.
 // Drawn on a tiny canvas scaled up with crisp pixels.
 const Dancer = (() => {
   const W = 40, H = 58, CX = 20, BPM = 116;
@@ -14,6 +15,18 @@ const Dancer = (() => {
 
   // Each move: (beat within the move 0-7, fraction of the beat) -> pose.
   const MOVES = [
+    function byeByeBye(mb, f) {   // Deadpool's "Bye Bye Bye": arm shoved out palm-first three times, then the other, then puppet strings
+      if (mb === 7) {             // both hands up, dangling from puppet strings, popping on the half beat
+        const pop = f < 0.5 ? 0 : 1;
+        return { L: [-6, -8 - pop, -9, -15 - pop], R: [6, -8 + pop, 9, -15 + pop], palm: 'LR', squat: 1, lift: [pop * 2, (1 - pop) * 2] };
+      }
+      const side = mb < 4 ? 1 : -1, n = mb % 4;            // right arm for beats 0-3, left for 4-7
+      const s = n === 3 ? 1 - ease(f) : f < 0.25 ? ease(f / 0.25) : 1;   // snap out on the beat, pull back on the 4th
+      const out = lerp([3, 5, -2, 3], [7, -1, 14, -2], s);   // from fist at the chest to straight out, palm flat
+      const hip = [-4, 5, -2, 9];                            // other hand on the hip
+      const push = side > 0 ? { R: out, L: hip } : { L: mir(out), R: mir(hip) };
+      return { ...push, palm: s > 0.6 ? (side > 0 ? 'R' : 'L') : '', headX: Math.round(side * s * 2), hipX: Math.round(-side * s), lift: side > 0 ? [0, n < 3 ? 2 * s : 0] : [n < 3 ? 2 * s : 0, 0] };
+    },
     function lawnmower(mb, f) {   // one hand on the mower, the other yanks the cord on every beat
       const s = f < 0.35 ? ease(f / 0.35) : 1;
       const R = lerp([-1, 6, -5, 13], [6, -4, 11, -10], s);
@@ -50,10 +63,11 @@ const Dancer = (() => {
     const n = Math.max(Math.abs(x1 - x0), Math.abs(y1 - y0), 1);
     for (let i = 0; i <= n; i++) px(x0 + (x1 - x0) * i / n, y0 + (y1 - y0) * i / n, 2, 2, c);
   }
-  function arm(sx, sy, a, flat) {
+  function arm(sx, sy, a, flat, palm) {
     line(sx, sy, sx + a[0], sy + a[1], look.suit);
     line(sx + a[0], sy + a[1], sx + a[2], sy + a[3], look.suit);
-    if (flat) px(sx + a[2] - 1, sy + a[3], 4, 2, look.b);   // flat "Egyptian" hand
+    if (palm) px(sx + a[2] + (a[2] > 0 ? 1 : -1), sy + a[3] - 2, 2, 5, look.b);   // open palm facing out ("bye bye bye")
+    else if (flat) px(sx + a[2] - 1, sy + a[3], 4, 2, look.b);   // flat "Egyptian" hand
     else px(sx + a[2] - 0.5, sy + a[3] - 0.5, 3, 3, look.b);   // glove
   }
 
@@ -137,11 +151,12 @@ const Dancer = (() => {
     if (P.back) booty(CX + hipX, hipY - 5 + (P.bootyY || 0), hipX);
 
     const sy = top + 1, sl = CX - 5, sr = CX + 4;
-    if (P.behindL || P.armsBehind) arm(sl, sy, P.L, P.flatHands);
-    if (P.armsBehind) arm(sr, sy, P.R, P.flatHands);
+    const palm = P.palm || '', pl = palm.includes('L'), pr = palm.includes('R');
+    if (P.behindL || P.armsBehind) arm(sl, sy, P.L, P.flatHands, pl);
+    if (P.armsBehind) arm(sr, sy, P.R, P.flatHands, pr);
     head(CX - 11 + headX, 9 + bob + (P.headY || 0), P.back, P.peek);
-    if (!P.behindL && !P.armsBehind) arm(sl, sy, P.L, P.flatHands);
-    if (!P.armsBehind) arm(sr, sy, P.R, P.flatHands);
+    if (!P.behindL && !P.armsBehind) arm(sl, sy, P.L, P.flatHands, pl);
+    if (!P.armsBehind) arm(sr, sy, P.R, P.flatHands, pr);
 
     // Music notes floating up beside him.
     for (let k = 0; k < 2; k++) {
@@ -180,10 +195,11 @@ const Dancer = (() => {
       trickStart = now;
       const at = s => s / TRICK_SECS;   // seconds -> keyframe offset
       const roll = 'cubic-bezier(.45,.05,.55,.95)';
+      const out = document.body.classList.contains('touch') ? -260 : 260;   // phones: he's top-right, so cartwheel left
       busy = el.animate([
         { transform: 'translate(0, 0) rotate(0deg)', offset: 0, easing: roll },
-        { transform: 'translate(260px, 0) rotate(360deg)', offset: at(0.9) },              // cartwheel out
-        { transform: 'translate(260px, 0) rotate(360deg)', offset: at(1.9), easing: roll }, // bow
+        { transform: `translate(${out}px, 0) rotate(${Math.sign(out) * 360}deg)`, offset: at(0.9) },              // cartwheel out
+        { transform: `translate(${out}px, 0) rotate(${Math.sign(out) * 360}deg)`, offset: at(1.9), easing: roll }, // bow
         { transform: 'translate(0, 0) rotate(0deg)', offset: at(2.8), easing: 'ease-out' }, // cartwheel back
         { transform: 'translate(0, -40px) rotate(0deg)', offset: at(3.2), easing: 'ease-in' },
         { transform: 'translate(0, 0) rotate(0deg)', offset: 1 },                          // jump

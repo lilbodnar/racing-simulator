@@ -607,11 +607,11 @@
     switch (e.code) {
       case 'Escape': togglePause(); break;
       case 'KeyC': cycleCamera(); break;
-      case 'KeyM': if (inRace()) { car.auto = !car.auto; toast(car.auto ? 'Automatic gearbox' : 'Manual gearbox  (Q / E to shift)', '', 1.6); } break;
+      case 'KeyM': if (inRace()) { car.auto = !car.auto; announce(car.auto ? 'Automatic gearbox' : 'Manual gearbox  (Q / E to shift)'); } break;
       case 'KeyE': if (inRace()) { manualShift(); shiftUp(); } break;
       case 'KeyQ': if (inRace()) { manualShift(); shiftDown(); } break;
       case 'KeyR': resetCar(); break;
-      case 'KeyN': muted = !muted; toast(muted ? 'Sound off' : 'Sound on', '', 1); break;
+      case 'KeyN': muted = !muted; announce(muted ? 'Sound off' : 'Sound on'); break;
     }
   });
   addEventListener('keyup', e => { if (KEYMAP[e.code]) { keys[KEYMAP[e.code]] = false; e.preventDefault(); } });
@@ -693,7 +693,7 @@
     if (motionAsked) return;
     motionAsked = true;
     DeviceOrientationEvent.requestPermission()
-      .then(r => { if (r !== 'granted') toast('Steering needs motion access: close this tab, reopen and tap Allow', 'red', 4); })
+      .then(r => { if (r !== 'granted') announce('Steering needs motion access: close this tab, reopen and tap Allow'); })
       .catch(() => { motionAsked = false; });
   }
 
@@ -712,7 +712,7 @@
   }
 
   function cycleCamera() {
-    if (inRace()) { camIdx = (camIdx + 1) % CAMERAS.length; toast(CAMERAS[camIdx] + ' camera', '', 1.2); }
+    if (inRace()) { camIdx = (camIdx + 1) % CAMERAS.length; announce(CAMERAS[camIdx] + ' camera'); }
   }
   // R: in a full-grid race, drop in 12 m behind the last-placed car at its speed; otherwise just
   // straighten up where you are. Any lap you use it on can't set a record.
@@ -737,14 +737,14 @@
     race.lapTainted = true;
     const N = T.n;
     race.cp = p.i >= Math.floor(N * 2 / 3) ? 2 : p.i >= Math.floor(N / 3) ? 1 : 0;
-    toast('Rejoined behind ' + (last.name || last.drv.code), '', 1.4);
+    announce('Rejoined behind ' + (last.name || last.drv.code));
   }
   function shiftUp() { if (car.gear >= 1 && car.gear < 8) { car.gear++; car.shiftTimer = 0.06; } }
   // Down a gear at any speed (no lockout: an over-revving engine just brakes harder).
   function shiftDown() { if (car.gear > 1) car.gear--; }
   // Shifting by hand (Q / E or the paddles) switches an automatic gearbox to manual, so it doesn't
   // shift straight back up.
-  function manualShift() { if (car.auto) { car.auto = false; toast('Manual gearbox (Q / E or paddles)', '', 1.4); } }
+  function manualShift() { if (car.auto) { car.auto = false; announce('Manual gearbox (Q / E or paddles)'); } }
   // Wheel / controller buttons.
   function wheelAction(a) {
     if (a === 'pause') togglePause();
@@ -998,14 +998,18 @@
     race.wide = true;
     if (race.time - race.hitAt < 2.5) return;      // knocked off by another car: not an offence
     const n = ++race.limits;
-    if (n < 3) raceControl('Track limits. Warning ' + n + '.');
-    else if (n === 3) raceControl('Black and white flag. Track limits. The next one is a penalty.');
-    else { race.penalty += 5; raceControl('Five second penalty for track limits. ' + race.penalty + ' seconds in total.'); }
+    if (n < 3) announce('Track limits. Warning ' + n + '.');
+    else if (n === 3) announce('Black and white flag. Track limits. The next one is a penalty.');
+    else { race.penalty += 5; announce('Five second penalty for track limits. ' + race.penalty + ' seconds in total.'); }
   }
-  // Race control talks to you over the radio instead of covering the screen: a two-tone beep,
-  // then the message in the device's own voice.
-  function raceControl(text) {
-    if (muted) return;
+  // Race control talks to you over the radio instead of putting banners over the screen: a
+  // two-tone beep, then the message in the device's own voice, reworded to read aloud well.
+  function announce(text) {
+    if (!text || muted) return;
+    text = text
+      .replace(/(\d+):(\d\d)\.(\d)\d\d/g, (_, m, sec, d) => (+m ? m + (+m === 1 ? ' minute ' : ' minutes ') : '') + +sec + '.' + d + ' seconds')
+      .replace(/\(incl\. \+(\d+)s\)/, 'including $1 seconds of penalties')
+      .replace(/ \/ /g, ' or ').replace(/[·\n]/g, '. ').replace(/[…()]/g, '');
     if (audio) {
       const t = audio.ctx.currentTime, g = audio.ctx.createGain(), o = audio.ctx.createOscillator();
       o.type = 'square'; o.frequency.setValueAtTime(1400, t); o.frequency.setValueAtTime(1050, t + 0.09);
@@ -1038,9 +1042,9 @@
       race.state = 'finished';
       race.finishT = 0;
       if (!race.tainted && (rec.bestRace == null || finalTime() < rec.bestRace)) { rec.bestRace = finalTime(); race.newRaceRec = true; }
-      toast('FINISH!  ' + (field ? 'P' + playerPosition() + '  ' : '') + fmt(finalTime()) + (race.penalty ? '  (incl. +' + race.penalty + 's)' : ''), 'green', 3);
+      announce('FINISH!  ' + (field ? 'P' + playerPosition() + '  ' : '') + fmt(finalTime()) + (race.penalty ? '  (incl. +' + race.penalty + 's)' : ''));
     } else {
-      toast(msg + (race.laps.length === RACE_LAPS - 1 ? '\nFinal lap' : ''), cls, 2.2);
+      announce(msg + (race.laps.length === RACE_LAPS - 1 ? '\nFinal lap' : ''));
     }
   }
 
@@ -1470,15 +1474,7 @@
   }
 
   // ---------- HUD ----------
-  let toastTimer = 0;
-  function toast(text, cls = '', secs = 2) {
-    const el = $('toast');
-    el.innerHTML = text.split('\n').map(s => s.replace(/</g, '&lt;')).join('<br>');
-    el.className = 'show ' + cls;
-    toastTimer = secs;
-  }
   function updateHud(dt) {
-    if (toastTimer > 0 && (toastTimer -= dt) <= 0) $('toast').className = '';
     const lapNo = Math.min(race.laps.length + 1, RACE_LAPS);
     $('h-lap').textContent = lapNo + '/' + RACE_LAPS;
     $('h-pos').textContent = field ? 'P' + playerPosition() + '/' + (field.cars.length + mp.remotes.size + 1) : 'SOLO';
@@ -1688,7 +1684,7 @@
     const gap = ver.s - playerS, behind = gap < 0;
     if (verBehind === true && !behind && gap < 30 && race.state === 'racing' && audio && !muted && audio.ctx.currentTime > riffUntil) {
       riffUntil = audio.ctx.currentTime + LobbyMusic.riff(audio.ctx, audio.ctx.destination);   // own compressor, not squashed by the engine
-      toast('DU DU DU DU MAX VERSTAPPEN', '', 1.8);
+      announce('DU DU DU DU MAX VERSTAPPEN');
     }
     verBehind = behind;
   }
@@ -1858,7 +1854,7 @@
         impact(rs * k * 2 + 2, f.x, f.y, f.z, rvx / rs, rvz / rs);
         f.vx = wx - rvx * 0.3; f.vz = wz - rvz * 0.3; f.vy = 5 + Math.random() * 7; f.hitCd = 1;
         race.hitAt = race.time;                                   // knocked off by debris: not a track-limits offence
-        toast(f.kind.name === 'cow' ? 'MOOOOO!' : 'HIT BY FLYING ' + f.kind.name.toUpperCase() + '!', 'red', 1.3);
+        announce(f.kind.name === 'cow' ? 'MOOOOO!' : 'HIT BY FLYING ' + f.kind.name.toUpperCase() + '!');
         continue;
       }
       if (!field || !ownsAI()) continue;
@@ -2034,7 +2030,7 @@
   }
   $('btn-wheel-setup').onclick = () => WheelSetup.open(saved => {
     inputStatusText = '';
-    if (saved) toast('Wheel set up', 'green', 1.5);
+    if (saved) announce('Wheel set up');
   });
 
   $('btn-start').onclick = startRace;
@@ -2080,7 +2076,7 @@
     else r.err = { x: x - r.x, y: y - r.y, z: z - r.z, h: wrapAngle(h - r.h), s: s - r.s, d: d - r.d };
     Object.assign(r, { v, vL, w, steer, pitch, brake, at: performance.now() });
     r.finish = fin >= 0 ? fin : null;
-    if (gone && !r.gone && race.state === 'racing') toast(r.name + ' finished', '', 1.4);
+    if (gone && !r.gone && race.state === 'racing') announce(r.name + ' finished');
     r.gone = !!gone;
     r.model.group.visible = !r.gone;
   }
@@ -2199,7 +2195,7 @@
       race.state = 'prerace';
       startRace();
       show('loading', false);
-      toast('Waiting for every driver to load…', '', 60);
+      announce('Waiting for every driver to load…');
       if (mp.host) {
         mp.ready.add('host');
         mp.readyTimer = setTimeout(mpSendGo, 25000);   // don't wait forever for a slow one
@@ -2222,7 +2218,6 @@
     if (!mp.racing || !race.waiting) return;
     race.waiting = false; race.cdT = 0; race.goAt = goAt;
     mp.goT = performance.now() - (mp.host ? 0 : mp.lat);   // the host sent it this long ago
-    toast('', '', 0);
   }
 
   // ----- Leaving -----
@@ -2326,7 +2321,7 @@
       }
       case 'left': {
         const r = mp.remotes.get(m.id);
-        if (r) { if (race.state === 'racing') toast(r.name + ' left the race', '', 1.6); mpRemoveRemote(m.id); }
+        if (r) { if (race.state === 'racing') announce(r.name + ' left the race'); mpRemoveRemote(m.id); }
         break;
       }
     }
@@ -2336,7 +2331,7 @@
     mp.players = mp.players.filter(q => q.id !== id);
     mp.raw.delete(id); mp.lats.delete(id);
     if (mp.remotes.has(id)) {
-      if (race.state === 'racing' && p) toast(p.name + ' left the race', '', 1.6);
+      if (race.state === 'racing' && p) announce(p.name + ' left the race');
       mpRemoveRemote(id);
       Net.broadcast({ t: 'left', id });
     }
@@ -2499,7 +2494,7 @@
           race.state = 'racing';
           mp.started = true;
           show('lights', false);
-          toast('GO!', 'green', 1.2);
+          announce('GO!');
         }
       }
       // Fixed-step physics for stable handling.
