@@ -612,27 +612,38 @@
   // On-screen touch controls. Each finger is tracked on its own, so you can hold gas and steer
   // together and slide a thumb from one button to the next.
   const tk = {};                       // pressed touch buttons: up / down / left / right / boost
-  const fingers = new Map();           // pointerId -> data-k of the button under it
+  const fingers = new Map();           // finger id -> data-k of the button under it
   function touchKeys() {
     for (const k of ['up', 'down', 'left', 'right', 'boost']) tk[k] = false;
     for (const k of fingers.values()) if (k) tk[k] = true;
     document.querySelectorAll('#touch [data-k]').forEach(b => b.classList.toggle('on', !!tk[b.dataset.k]));
   }
-  function fingerAt(e) {
-    const el = document.elementFromPoint(e.clientX, e.clientY);
-    fingers.set(e.pointerId, el && el.closest && el.closest('#touch [data-k]') ? el.closest('[data-k]').dataset.k : null);
-    touchKeys();
+  function buttonAt(x, y) {
+    const el = document.elementFromPoint(x, y);
+    return el && el.closest && el.closest('#touch [data-k]') ? el.closest('[data-k]').dataset.k : null;
   }
+  function fingerAt(e) { fingers.set(e.pointerId, buttonAt(e.clientX, e.clientY)); touchKeys(); }
+  // Fingers are rebuilt from the full list of touches on every touch event, rather than added on
+  // down and removed on up: phones sometimes drop a finger's "up", which left a button stuck on.
+  const syncTouches = e => {
+    fingers.clear();
+    for (const t of e.touches) fingers.set('t' + t.identifier, buttonAt(t.clientX, t.clientY));
+    touchKeys();
+  };
   const touchPad = $('touch');
+  for (const ev of ['touchstart', 'touchmove', 'touchend', 'touchcancel'])
+    touchPad.addEventListener(ev, syncTouches);
+  // Pointer events handle the action buttons, and finger tracking for a mouse (testing on a PC).
   touchPad.addEventListener('pointerdown', e => {
     e.preventDefault();
     const btn = e.target.closest('[data-a]');
     if (btn) { if (btn.dataset.a !== 'tilt') touchAction(btn.dataset.a); return; }
+    if (e.pointerType === 'touch') return;
     touchPad.setPointerCapture(e.pointerId);
     fingerAt(e);
   });
-  // Tilt goes on finger-up: iPhones only let a page ask for motion access when the finger lifts.
-  touchPad.addEventListener('pointerup', e => {
+  // Tilt goes on touchend: iPhones only let a page ask for motion access from a touchend or click.
+  touchPad.addEventListener('touchend', e => {
     const btn = e.target.closest('[data-a]');
     if (btn && btn.dataset.a === 'tilt') touchAction('tilt');
   });
@@ -660,7 +671,7 @@
     if (!tiltOn && window.DeviceOrientationEvent && DeviceOrientationEvent.requestPermission) {
       try {   // iPhone / iPad ask for permission first
         if (await DeviceOrientationEvent.requestPermission() !== 'granted') { toast('Motion access denied', 'red', 1.6); return; }
-      } catch (err) { toast('Tilt steering not available', 'red', 1.6); return; }
+      } catch (err) { toast('Tilt steering not available (' + (err && err.name || err) + ')', 'red', 2.5); return; }
     }
     tiltOn = !tiltOn;
     document.body.classList.toggle('tilt', tiltOn);
