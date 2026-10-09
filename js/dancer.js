@@ -1,4 +1,4 @@
-// Little pixel-art driver with a giant helmeted head who dances in the top-left corner of the
+// Little pixel-art driver with a giant helmeted head who dances in the top-left corner (top-right on phones) of the
 // track-selection screen, busting out cheesy dance moves on the beat of the menu song
 // (116 BPM): the lawnmower, the sprinkler, walk like an Egyptian, a booty shake and the YMCA.
 // Drawn on a tiny canvas scaled up with crisp pixels.

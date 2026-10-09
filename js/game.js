@@ -2481,7 +2481,11 @@
   const splash = $('splash');
   const unlock = () => { initAudio(); splash.classList.add('gone'); };
   addEventListener('pointerdown', unlock);
+  addEventListener('pointerup', unlock);    // phones only allow sound to start when the finger lifts
+  addEventListener('touchend', unlock);
   addEventListener('keydown', unlock);
+  // iPhones mute web audio when the ring/silent switch is on silent, unless the page says it's media playback
+  if (navigator.audioSession) navigator.audioSession.type = 'playback';
   initAudio();
   if (audio) {
     audio.ctx.addEventListener('statechange', () => { if (audio.ctx.state === 'running') splash.classList.add('gone'); });
