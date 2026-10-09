@@ -21,7 +21,15 @@ const THEMES = {
                  landmarks: [{ type: 'stadium', u: 0.45, v: 0.5 }], urban: { rows: 1, minH: 6, maxH: 18, palette: 'miami' } },
   montreal:    { time: 'day', ground: 'grass', trees: { kind: 'broad', count: 900 }, water: { sides: ['E', 'W'], margin: 60 },
                  landmarks: [{ type: 'biosphere', u: 0.95, v: 0.0 }], skyline: { dir: 'N', count: 45, minH: 60, maxH: 220, dist: 1000 } },
-  monaco:      { time: 'day', ground: 'urban', trees: { kind: 'palm', count: 120 }, water: { sides: ['S', 'E'], margin: 40 }, boats: 70,
+  // Monaco: Port Hercule fills the space between the swimming-pool section, Rascasse and the road from
+  // the tunnel exit to Tabac; the open sea lies beyond it and off the coast below the tunnel. The rock
+  // of Monaco-Ville closes the harbour to the south. (Map coordinates, same as the track points.)
+  monaco:      { time: 'day', ground: 'urban', trees: { kind: 'palm', count: 120 }, boats: 70,
+                 water: { poly: [[-200, -62], [-120, -50], [-40, -40], [-12, -44], [15, -32], [40, -14], [75, -7], [125, 6], [165, 19],
+                   [215, 44], [255, 61], [305, 91], [343, 126], [370, 160], [392, 200], [408, 240], [420, 285], [430, 350], [438, 420],
+                   [470, 470], [700, 700], [6000, 700], [6000, -6000], [350, -6000], [350, -900], [250, -600], [120, -575], [-60, -562],
+                   [-112, -543], [-172, -444], [-198, -392], [-203, -340], [-199, -300], [-214, -230], [-240, -186], [-246, -140],
+                   [-236, -96], [-216, -70]] },
                  urban: { rows: 3, minH: 15, maxH: 70, palette: 'monaco' }, hills: { h: 500, dist: 450, dir: 'N' } },
   barcelona:   { time: 'day', ground: 'dry', trees: { kind: 'pine', count: 400 }, hills: { h: 260, dist: 900 } },
   redbullring: { time: 'day', ground: 'grass', trees: { kind: 'pine', count: 1000 }, hills: { h: 1000, dist: 900 } },
@@ -128,9 +136,10 @@ function buildScenery(ctx) {
     const w = theme.water;
     const mat = new THREE.MeshPhongMaterial({ color: night ? 0x0b1830 : 0x1f6390, shininess: 90, specular: 0x8899aa });
     const FAR = 9000;
-    if (w.inside) {
+    if (w.inside || w.poly) {
       const pts = [];
-      for (let i = 0; i < T.n; i += 8) pts.push([cx0 + (T.x[i] - cx0) * w.inside, cz0 + (T.z[i] - cz0) * w.inside]);
+      if (w.poly) for (const [x, y] of w.poly) pts.push(T.fromMap(x, y));
+      else for (let i = 0; i < T.n; i += 8) pts.push([cx0 + (T.x[i] - cx0) * w.inside, cz0 + (T.z[i] - cz0) * w.inside]);
       const shape = new THREE.Shape(pts.map(p => new THREE.Vector2(p[0], -p[1])));
       const m = new THREE.Mesh(new THREE.ShapeGeometry(shape), mat);
       m.rotation.x = -Math.PI / 2; m.position.y = 0.04;
@@ -395,6 +404,44 @@ function buildScenery(ctx) {
     return [bx, bz];
   };
   const trackPoint = (i, side, off) => [T.x[i] + T.nx[i] * side * off, T.z[i] + T.nz[i] * side * off];
+  // A whole rectangular footprint (centre x/z, heading ry, half-sizes hx across and hz along) is at
+  // least `clear` from the track and out of the water - checking only the centre lets long stands
+  // and buildings beside a bend poke onto the road.
+  const footprintClear = (x, z, ry, hx, hz, clear) => {
+    const c = Math.cos(ry), s = Math.sin(ry);
+    const nx = Math.max(1, Math.ceil(hx / 6)), nz = Math.max(1, Math.ceil(hz / 6));
+    for (let a = -nx; a <= nx; a++) for (let b = -nz; b <= nz; b++) {
+      if (Math.abs(a) !== nx && Math.abs(b) !== nz) continue;    // perimeter only
+      const lx = a / nx * hx, lz = b / nz * hz;
+      const px = x + lx * c + lz * s, pz = z - lx * s + lz * c;
+      if (isWater(px, pz) || idx.nearest(px, pz, clear + 5) < clear) return false;
+    }
+    return true;
+  };
+  // Footprints of stands, garages and buildings already placed, so they don't intersect each other.
+  const OCC = 60, occ = new Map(), okey = (a, b) => a * 100003 + b;
+  const obb = (x, z, ry, hx, hz) => ({ x, z, hx, hz, c: Math.cos(ry), s: Math.sin(ry), r: Math.hypot(hx, hz) });
+  const obbHit = (A, B) => {
+    if (Math.hypot(A.x - B.x, A.z - B.z) > A.r + B.r) return false;
+    // Separating axis test on the two boxes' local axes.
+    for (const [ax, az] of [[A.c, -A.s], [A.s, A.c], [B.c, -B.s], [B.s, B.c]]) {
+      const proj = O => Math.abs((O.c * ax - O.s * az) * O.hx) + Math.abs((O.s * ax + O.c * az) * O.hz);
+      if (Math.abs((B.x - A.x) * ax + (B.z - A.z) * az) > proj(A) + proj(B)) return false;
+    }
+    return true;
+  };
+  const occupied = (o) => {
+    const cx = Math.floor(o.x / OCC), cz = Math.floor(o.z / OCC), R = Math.ceil((o.r + 40) / OCC);
+    for (let dx = -R; dx <= R; dx++) for (let dz = -R; dz <= R; dz++) {
+      for (const p of occ.get(okey(cx + dx, cz + dz)) || []) if (obbHit(o, p)) return true;
+    }
+    return false;
+  };
+  const occupy = (o) => {
+    const k = okey(Math.floor(o.x / OCC), Math.floor(o.z / OCC));
+    if (!occ.has(k)) occ.set(k, []);
+    occ.get(k).push(o);
+  };
 
   // Window textures for buildings (lit at night).
   const winTex = canvasTex(64, 128, (g, w, h) => {
@@ -422,26 +469,6 @@ function buildScenery(ctx) {
     ifema:  [0xe9e9e9, 0xcfd4d8, 0xb8c0c8],
     city:   [0xb9bdc2, 0x9aa3ad, 0xd3d0c8, 0x8d97a3, 0xc7c2b8],
   };
-
-  // ---------- City blocks lining street circuits ----------
-  if (theme.urban) {
-    const u = theme.urban, list = [], cols = [], pal = PALETTES[u.palette];
-    const base = T.hw + (T.def.walls ? T.def.walls.offset : 6) + 7;
-    for (let i = 0; i < T.n; i += 9) {
-      for (const side of [1, -1]) {
-        for (let r = 0; r < u.rows; r++) {
-          if (rand() < 0.2) continue;
-          const w = rr(14, 30), d = rr(14, 28), h = rr(u.minH, u.maxH) * (r ? 1.35 : 1);
-          const off = base + r * 34 + d / 2 + rr(0, 4);
-          const [x, z] = trackPoint(i, side, off);
-          if (!free(x, z, T.hw + Math.max(w, d) * 0.7 + 4)) continue;
-          list.push({ x, z, ry: T.hd[i], sx: d, sy: h, sz: w });
-          cols.push(new THREE.Color(pal[Math.floor(rand() * pal.length)]));
-        }
-      }
-    }
-    instanced(boxGeo, buildingMat(), list, cols);
-  }
 
   // ---------- Distant skyline ----------
   if (theme.skyline) {
@@ -629,18 +656,66 @@ function buildScenery(ctx) {
   }
 
   // ---------- Boats (harbours / marinas) ----------
+  // Motor yachts: a hull with a pointed bow, teak deck and two decks of superstructure with dark
+  // window bands, a few proportions, built 30 m long and scaled to size.
   if (theme.boats) {
-    const hulls = [], cabins = [];
-    for (let k = 0; k < theme.boats * 30 && hulls.length < theme.boats; k++) {
+    const paint = (geo, color) => {
+      const g = geo.index ? geo.toNonIndexed() : geo, c = new THREE.Color(color), cols = [];
+      for (let i = 0; i < g.attributes.position.count; i++) cols.push(c.r, c.g, c.b);
+      g.setAttribute('color', new THREE.Float32BufferAttribute(cols, 3));
+      g.deleteAttribute('uv');
+      g.computeVertexNormals();
+      return g;
+    };
+    // Plan view: square stern at z0, straight sides, curving in to a point at the bow (+z).
+    const plan = (beam, z0, z1, bow) => {
+      const s = new THREE.Shape(), b = beam / 2;
+      s.moveTo(-b, -z0); s.lineTo(b, -z0); s.lineTo(b, -(z1 - bow));
+      s.quadraticCurveTo(b, -z1, 0, -z1); s.quadraticCurveTo(-b, -z1, -b, -(z1 - bow)); s.lineTo(-b, -z0);
+      return s;
+    };
+    // Extrude a plan upwards from y0 by h (shape y is -z after the rotation).
+    const slab = (shape, y0, h, color) => paint(new THREE.ExtrudeGeometry(shape, { depth: h, bevelEnabled: false })
+      .rotateX(-Math.PI / 2).translate(0, y0, 0), color);
+    const yacht = (beam, hullCol, tiers) => {
+      const parts = [
+        slab(plan(beam, -15, 15, 11), -0.8, 3, hullCol),                       // hull
+        slab(plan(beam * 1.01, -15.05, 15.05, 11), 0.15, 0.35, 0x1f3550),     // boot stripe at the waterline
+        slab(plan(beam * 0.94, -14.6, 14.4, 10.5), 2.2, 0.12, 0xb08a5a),      // teak deck
+      ];
+      tiers.forEach(([w, z0, z1, h], k) => {
+        const y = 2.32 + tiers.slice(0, k).reduce((a, t) => a + t[3], 0);
+        parts.push(slab(plan(beam * w, z0, z1, 3), y, h, 0xf7f7f5));
+        parts.push(slab(plan(beam * w * 1.02, z0 - 0.05, z1 + 0.08, 3), y + h * 0.35, h * 0.4, 0x1c2632));   // windows
+      });
+      const top = 2.32 + tiers.reduce((a, t) => a + t[3], 0);
+      parts.push(paint(new THREE.BoxGeometry(0.3, 2.4, 0.3).translate(0, top + 1.2, -3), 0xdedede));   // mast
+      parts.push(paint(new THREE.BoxGeometry(beam * 0.4, 0.25, 1.2).translate(0, top + 1.6, -3), 0xdedede));   // radar arch
+      return mergeGeo(parts);
+    };
+    const VARIANTS = [
+      yacht(6.4, 0xfafafa, [[0.78, -11, 7, 2.4], [0.6, -7, 3, 2]]),
+      yacht(6, 0x1d2f4a, [[0.8, -10, 6, 2.3], [0.62, -6, 2, 1.9], [0.45, -4, 0, 1.6]]),   // dark-hulled superyacht
+      yacht(5.6, 0xf2f2ee, [[0.75, -9, 5, 2.2]]),
+    ];
+    const lists = VARIANTS.map(() => []);
+    for (let k = 0, placed = 0; k < theme.boats * 40 && placed < theme.boats; k++) {
       const x = cx0 + rr(-radius - 400, radius + 400), z = cz0 + rr(-radius - 400, radius + 400);
-      if (!isWater(x, z) || idx.nearest(x, z, 400) > 350 || idx.nearest(x, z, 60) < 50) continue;
-      const L = rr(10, 45), ry = rand() * 0.6 + (rand() < 0.5 ? 0 : Math.PI);
-      hulls.push({ x, z, y: 0, ry, sx: L * 0.25, sy: 2.5, sz: L });
-      cabins.push({ x, z, y: 2.5, ry, sx: L * 0.18, sy: L * 0.08 + 1, sz: L * 0.5 });
+      if (!isWater(x, z) || idx.nearest(x, z, 400) > 350) continue;
+      const L = rr(16, 55), s = L / 30, ry = rand() * Math.PI * 2;
+      const fp = obb(x, z, ry, 3.5 * s + 2, L / 2 + 3);
+      // The whole boat in the water, off the quay and clear of the other boats.
+      let wet = true;
+      for (const [a, b] of [[0, 1], [0, -1], [1, 0], [-1, 0]]) {
+        const lx = a * fp.hx, lz = b * fp.hz;
+        if (!isWater(x + lx * fp.c + lz * fp.s, z - lx * fp.s + lz * fp.c)) wet = false;
+      }
+      if (!wet || idx.nearest(x, z, 60) < 30 + L / 2 || occupied(fp)) continue;
+      occupy(fp);
+      lists[placed++ % VARIANTS.length].push({ x, z, y: 0, ry, s });
     }
-    const white = new THREE.MeshPhongMaterial({ color: 0xf6f6f6, shininess: 60 });
-    instanced(boxGeo, white, hulls);
-    instanced(boxGeo, new THREE.MeshPhongMaterial({ color: 0xdfe7ee, shininess: 80 }), cabins);
+    const mat = new THREE.MeshPhongMaterial({ vertexColors: true, shininess: 70, specular: 0x666666 });
+    VARIANTS.forEach((g, v) => instanced(g, mat, lists[v]));
   }
 
   // ---------- Grandstands ----------
@@ -711,9 +786,19 @@ function buildScenery(ctx) {
 
   // A grandstand in local space: x = away from the track, y = up, z = along the track.
   let standNo = 0;
+  const barrier = walled ? T.hw + T.def.walls.offset : T.hw + 26;   // barrier line (tyre wall at the edge of run-off)
   function stand(i, side, off, len = 46, depth = 16, height = 12, roof = true) {
     const [x, z] = trackPoint(i, side, off);
-    if (!free(x, z, off - 2)) return;
+    // Along its whole length the stand must sit behind the barrier (the roof may overhang the
+    // barrier, never the track), clear of other stands and buildings.
+    const roofFront = roof ? -3.5 : 0, mid = (roofFront + depth + 1.5) / 2, gmid = (depth + 1.5) / 2;
+    const at = m => [x + T.nx[i] * side * m, z + T.nz[i] * side * m];
+    const [gx, gz] = at(gmid), [rx, rz] = at(roofFront);
+    if (!footprintClear(gx, gz, T.hd[i], gmid, len / 2 + 0.5, barrier + 0.3)) return;
+    if (roof && !footprintClear(rx, rz, T.hd[i], 0, len / 2 + 0.5, T.hw + 1.5)) return;
+    const fp = obb(...at(mid), T.hd[i], (depth + 1.5 - roofFront) / 2, len / 2 + 0.5);
+    if (occupied(fp)) return;
+    occupy(fp);
     const s = new THREE.Group();
     s.position.set(x, T.y[i], z);
     s.rotation.y = T.hd[i];
@@ -798,7 +883,7 @@ function buildScenery(ctx) {
   }
   if (theme.stadium) {   // track runs through a stadium (Foro Sol, COTA stadium section)
     const a = Math.floor(theme.stadium.from * T.n), b = Math.floor(theme.stadium.to * T.n);
-    for (let i = a; i < b; i += 22) for (const side of [1, -1]) stand(i, side, T.hw + 26, 44, 30, 24, false);
+    for (let i = a; i < b; i += 22) for (const side of [1, -1]) stand(i, side, T.hw + 27, 44, 30, 24, false);
   }
 
   // Big video screen beside the main straight
@@ -897,7 +982,9 @@ function buildScenery(ctx) {
     units.forEach((o, u) => {
       const i = (o + N) % N;
       const [x, z] = trackPoint(i, -1, garageOff);
-      if (!free(x, z, garageOff - 3)) return;
+      const gf = obb(x + T.nx[i] * -1, z + T.nz[i] * -1, T.hd[i], 8, 9.8);
+      if (!free(x, z, garageOff - 3) || occupied(gf)) return;
+      occupy(gf);
       const team = TEAMS[u - firstTeam];
       const col = team ? '#' + team.body.toString(16).padStart(6, '0') : '#1c2633';
       const label = team ? team.name.toUpperCase() : (u < firstTeam ? 'FIA' : 'FORMULA 1');
@@ -980,6 +1067,39 @@ function buildScenery(ctx) {
       const sp = new THREE.Mesh(new THREE.BoxGeometry(0.12, 2.2, 0.12), steelMat);
       sp.position.set(sx, T.y[en] + 1.1, sz); group.add(sp);
     }
+  }
+
+  // ---------- City blocks lining street circuits ----------
+  // Placed after the stands and garages so they fit round them. Each block's whole footprint has to
+  // clear the barriers (and every other part of the circuit), the water and the blocks already built.
+  if (theme.urban) {
+    const u = theme.urban, list = [], cols = [], pal = PALETTES[u.palette];
+    const base = T.hw + (T.def.walls ? T.def.walls.offset : 6) + 7;
+    const clear = T.hw + (T.def.walls ? T.def.walls.offset + 3 : 8);
+    for (let i = 0; i < T.n; i += 9) {
+      for (const side of [1, -1]) {
+        for (let r = 0; r < u.rows; r++) {
+          if (rand() < 0.2) continue;
+          const w = rr(14, 30), d = rr(14, 28), h = rr(u.minH, u.maxH) * (r ? 1.35 : 1);
+          const off = base + r * 34 + d / 2 + rr(0, 4);
+          const [x, z] = trackPoint(i, side, off);
+          const fp = obb(x, z, T.hd[i], d / 2 + 1, w / 2 + 1);   // +1 m: a narrow street between neighbours
+          if (!footprintClear(x, z, T.hd[i], d / 2, w / 2, clear) || occupied(fp)) continue;
+          occupy(fp);
+          // On a slope, stand on the lowest ground under the footprint (not the centre's) so no corner
+          // floats, and grow by the drop so the roof stays where it would be on the high side.
+          let lo = Infinity, hi = -Infinity;
+          for (const a of [-1, 0, 1]) for (const b of [-1, 0, 1]) {
+            const lx = a * d / 2, lz = b * w / 2;
+            const g = groundAt(x + lx * fp.c + lz * fp.s, z - lx * fp.s + lz * fp.c);
+            lo = Math.min(lo, g); hi = Math.max(hi, g);
+          }
+          list.push({ x, z, y: lo - 0.3, ry: T.hd[i], sx: d, sy: h + hi - lo + 0.3, sz: w });
+          cols.push(new THREE.Color(pal[Math.floor(rand() * pal.length)]));
+        }
+      }
+    }
+    instanced(boxGeo, buildingMat(), list, cols);
   }
 
   // ---------- Floodlights (night races) ----------

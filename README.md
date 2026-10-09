@@ -12,7 +12,7 @@ A 2026-season F1 racing game that runs in the browser. Pick a circuit from the c
 | ↓ / S | Brake (hold when stopped to reverse) |
 | ← → / A D | Steer |
 | M | Switch automatic / manual gearbox |
-| Q / E | Shift down / up (manual gearbox) |
+| Q / E | Shift down / up (switches to manual; any gear at any speed, no rev limiter) |
 | Space | Overtake mode (within 1 s of the car ahead) |
 | C | Change camera |
 | R | Rejoin behind the last car (full-grid race) |

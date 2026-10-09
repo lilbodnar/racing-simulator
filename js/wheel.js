@@ -22,7 +22,8 @@ const Wheel = (() => {
   function defaults(id) {
     const xboxStyle = /g920|xbox/i.test(id);
     return {
-      steer: { axis: 0, center: 0, scale: -2.5 },   // ~ +/-180 degrees of a 900-degree wheel = full lock
+      steer: { axis: 0, center: 0, scale: -1 },     // the wheel's whole rotation, lock to lock = full steering
+      steerFull: true,
       throttle: { axis: xboxStyle ? 1 : 2, rest: 1, full: -1 },
       brake: { axis: xboxStyle ? 2 : 5, rest: 1, full: -1 },
       shiftUp: 4, shiftDown: 5, boost: 0, camera: 3, pause: 9, reset: null,
@@ -30,7 +31,15 @@ const Wheel = (() => {
     };
   }
   function load(id) {
-    try { const s = localStorage.getItem(STORE + id); if (s) return { cfg: JSON.parse(s), saved: true }; } catch (e) { /* storage blocked */ }
+    try {
+      const s = localStorage.getItem(STORE + id);
+      if (s) {
+        const c = JSON.parse(s);
+        // Older setups put full lock at a quarter turn; steering now uses the wheel's whole rotation.
+        if (!c.steerFull && c.steer) { c.steer.scale = Math.sign(c.steer.scale) || -1; c.steerFull = true; }
+        return { cfg: c, saved: true };
+      }
+    } catch (e) { /* storage blocked */ }
     return { cfg: defaults(id), saved: false };
   }
   function save(id, c) {
@@ -127,7 +136,7 @@ const Wheel = (() => {
 // Walks through each control, detecting which axis moved most or which button was newly pressed.
 const WheelSetup = (() => {
   const STEPS = [
-    { key: 'steer', type: 'axis', text: 'Turn the wheel LEFT to where you want full steering lock (about a quarter turn), then let it go back to the centre.' },
+    { key: 'steer', type: 'axis', text: 'Turn the wheel all the way LEFT (as far as it goes), then let it go back to the centre.' },
     { key: 'throttle', type: 'axis', text: 'Press the THROTTLE (right pedal) all the way down, then release it.' },
     { key: 'brake', type: 'axis', text: 'Press the BRAKE (middle pedal) all the way down, then release it.' },
     { key: 'shiftUp', type: 'button', text: 'Pull the RIGHT paddle (shift up).', optional: true },
@@ -223,7 +232,7 @@ const WheelSetup = (() => {
     if (back && still) det.settleT += 1 / 60; else det.settleT = 0;
     if (det.settleT < 0.35) return;
     const rest = v;
-    if (s.key === 'steer') advance({ axis: a, center: rest, scale: 1 / (det.ext - rest) });
+    if (s.key === 'steer') { cfg.steerFull = true; advance({ axis: a, center: rest, scale: 1 / (det.ext - rest) }); }
     else advance({ axis: a, rest, full: det.ext });
   }
 

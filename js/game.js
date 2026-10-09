@@ -7,7 +7,7 @@
   const MASS = 800;                  // kg
   const POWER = 750000;              // W
   const WHEELBASE = 3.6;             // m
-  const IDLE_RPM = 4000, REDLINE = 12500;
+  const IDLE_RPM = 4000, REDLINE = 12500, OVERREV = REDLINE * 1.6;   // no limiter: revs can run past the redline
   const GEAR_TOP = [0, 95, 135, 170, 205, 240, 275, 310, 345].map(k => k / 3.6); // m/s per gear
   const CAMERAS = ['Chase', 'Roof (T-cam)', 'Cockpit'];
   const OT_POWER = 350000;           // overtake mode: extra electric power (W)
@@ -24,6 +24,7 @@
     gravel: { grip: [3.2, 0.0008], turn: [3.5, 0.0009], drag: [1.2, 0.12],  bump: 0.04,  shake: 0.15, label: 'GRAVEL' },
   };
   const PIT_SAMPLES = 110;           // pit lane runs this many samples either side of the start line
+  const GANTRY_S = 12;               // start-light gantry this many metres past the start line
   const RUNOFF = 26;                 // outer barrier distance past the track edge on permanent circuits
   const GRAVEL = 22;                 // gravel trap width past the track edge
   const SEASON_YEAR = 2026;
@@ -195,6 +196,7 @@
       total += Math.hypot(d.x[b] - d.x[i], d.z[b] - d.z[i]);
     }
     d.total = total;
+    d.fromMap = (x, y) => [x * raw.scale - cx, -(y * raw.scale - cy)];   // track-data map coords -> world
     d.index = makeTrackIndex(d);
     d.pitSamples = PIT_SAMPLES;
 
@@ -375,7 +377,7 @@
       }
     }
 
-    // Start/finish line + gantry with start lights
+    // Start/finish line
     const sf = new THREE.Group();
     sf.position.set(T.x[0], T.y[0], T.z[0]);
     sf.rotation.y = T.hd[0];
@@ -384,25 +386,38 @@
     line.rotation.x = -Math.PI / 2;
     line.position.y = 0.07;
     sf.add(line);
+    trackGroup.add(sf);
+    // Start-light gantry spanning the track just past the line, square to the track at that point
+    // (not along the line's tangent, which on a curved straight ends up over the tarmac). Posts
+    // stand behind the barriers.
+    const gp = trackPose(T, GANTRY_S, 0);
+    const gantry = new THREE.Group();
+    gantry.position.set(gp.x, gp.y, gp.z);
+    gantry.rotation.y = gp.h;
     const steel = new THREE.MeshLambertMaterial({ color: 0x30363d });
-    for (const s of [-1, 1]) {
+    const postOff = side => {
+      const wall = (side > 0 ? T.wallL : T.wallR)[gp.i];
+      return Math.max(T.hw + 2.2, wall ? wall + 0.8 : 0);
+    };
+    const pL = postOff(1), pR = postOff(-1);
+    for (const x of [pL, -pR]) {
       const post = new THREE.Mesh(new THREE.BoxGeometry(0.6, 8, 0.6), steel);
-      post.position.set(s * (T.hw + 3), 4, 25);
-      sf.add(post);
+      post.position.set(x, 4, 0);
+      gantry.add(post);
     }
-    const beam = new THREE.Mesh(new THREE.BoxGeometry(T.hw * 2 + 6.6, 1.4, 0.8), steel);
-    beam.position.set(0, 7.6, 25);
-    sf.add(beam);
+    const beam = new THREE.Mesh(new THREE.BoxGeometry(pL + pR + 0.6, 1.4, 0.8), steel);
+    beam.position.set((pL - pR) / 2, 7.6, 0);
+    gantry.add(beam);
     gantryLights = [];
     for (let i = 0; i < 5; i++) {
       const m = new THREE.MeshBasicMaterial({ color: 0x330808 });
       const l = new THREE.Mesh(new THREE.CircleGeometry(0.45, 16), m);
-      l.position.set((2 - i) * 1.3, 7.6, 24.55);  // mirrored so lights fill left-to-right from the driver's view
+      l.position.set((2 - i) * 1.3, 7.6, -0.45);  // mirrored so lights fill left-to-right from the driver's view
       l.rotation.y = Math.PI;                     // face the cars on the grid
-      sf.add(l);
+      gantry.add(l);
       gantryLights.push(m);
     }
-    trackGroup.add(sf);
+    trackGroup.add(gantry);
     addGridBoxes();
 
     // Scenery and lighting for this circuit
@@ -531,8 +546,8 @@
       case 'Escape': togglePause(); break;
       case 'KeyC': cycleCamera(); break;
       case 'KeyM': if (inRace()) { car.auto = !car.auto; toast(car.auto ? 'Automatic gearbox' : 'Manual gearbox  (Q / E to shift)', '', 1.6); } break;
-      case 'KeyE': if (!car.auto) shiftUp(); break;
-      case 'KeyQ': if (!car.auto) shiftDown(); break;
+      case 'KeyE': if (inRace()) { manualShift(); shiftUp(); } break;
+      case 'KeyQ': if (inRace()) { manualShift(); shiftDown(); } break;
       case 'KeyR': resetCar(); break;
       case 'KeyN': muted = !muted; toast(muted ? 'Sound off' : 'Sound on', '', 1); break;
     }
@@ -575,14 +590,18 @@
     toast('Rejoined behind ' + last.drv.code, '', 1.4);
   }
   function shiftUp() { if (car.gear >= 1 && car.gear < 8) { car.gear++; car.shiftTimer = 0.06; } }
+  // Down a gear at any speed (no lockout: an over-revving engine just brakes harder).
   function shiftDown() { if (car.gear > 1) car.gear--; }
-  // Wheel / controller buttons. Paddles switch an automatic gearbox to manual.
+  // Shifting by hand (Q / E or the paddles) switches an automatic gearbox to manual, so it doesn't
+  // shift straight back up.
+  function manualShift() { if (car.auto) { car.auto = false; toast('Manual gearbox (Q / E or paddles)', '', 1.4); } }
+  // Wheel / controller buttons.
   function wheelAction(a) {
     if (a === 'pause') togglePause();
     else if (a === 'camera') cycleCamera();
     else if (a === 'reset') resetCar();
     else if ((a === 'shiftUp' || a === 'shiftDown') && inRace() && !paused) {
-      if (car.auto) { car.auto = false; toast('Manual gearbox (paddles)', '', 1.4); }
+      manualShift();
       if (a === 'shiftUp') shiftUp(); else shiftDown();
     }
   }
@@ -657,19 +676,21 @@
       } else car.revHold = 0;
 
       const top = GEAR_TOP[Math.max(1, car.gear)];
-      car.rpm = car.neutral ? approach(car.rpm, IDLE_RPM + car.throttle * 8000, dt * 30000) : clamp(sp / top * REDLINE, IDLE_RPM, REDLINE);
-      const tf = car.rpm < 5000 ? 0.55 : car.rpm < 9000 ? 0.55 + 0.45 * (car.rpm - 5000) / 4000 : 1;
+      // No rev limiter: the engine revs on past the redline (any gear can be selected at any speed),
+      // making less power the further it over-revs and braking hard off the throttle.
+      car.rpm = car.neutral ? approach(car.rpm, IDLE_RPM + car.throttle * 8000, dt * 30000) : clamp(sp / top * REDLINE, IDLE_RPM, OVERREV);
+      const over = Math.max(0, car.rpm / REDLINE - 1);
+      const tf = car.rpm < 5000 ? 0.55 : car.rpm < 9000 ? 0.55 + 0.45 * (car.rpm - 5000) / 4000 : Math.max(0.3, 1 - Math.max(0, over - 0.05) * 3);
       car.shiftTimer -= dt;
       // Overtake mode: extra electric power while Space is held, the battery has charge and
       // (in a full-grid race) we are within a second of the car ahead.
       car.boost = controls && (keys.boost || W.boost) && car.otAvail && car.ers > 0.01 && car.throttle > 0.5 && car.gear >= 1;
       const power = POWER + (car.boost ? OT_POWER : 0);
-      const limit = top * (car.boost && car.gear === 8 ? 1.06 : 1);
       let engineA = 0;
-      if (car.gear >= 1 && !car.neutral && car.shiftTimer <= 0 && sp < limit * 0.995) {
+      if (car.gear >= 1 && !car.neutral && car.shiftTimer <= 0) {
         engineA = car.throttle * Math.min(grip, power * tf / (MASS * Math.max(sp, 4)));
       }
-      const engineBrake = sp >= limit ? 3 : 0;
+      const engineBrake = car.gear >= 1 && !car.neutral ? (1 - car.throttle) * Math.min(over, 1) * 6 : 0;
       car.ers = clamp(car.ers + (car.boost ? -OT_DRAIN : car.brake * OT_REGEN + (car.throttle < 0.1 ? 0.015 : 0)) * dt, 0, 1);
       const brakeA = car.brake * Math.min(grip * 1.1, 14 + 0.0045 * v * v);
       const drag = 0.0011 * v * v + 0.25 + S.drag[0] + S.drag[1] * sp;
@@ -691,7 +712,9 @@
     const slide = Math.min(1, Math.abs(car.vL) / 8);
     const turnGrip = cornerGrip * (1 - 0.7 * slide);
     const maxYaw = turnGrip / Math.max(Math.abs(nv), 1);
-    let maxSteer = 0.40 / (1 + sp / 60);
+    // A wheel maps its whole rotation onto the steering, so it gets more lock (and keeps more of it
+    // at speed) than the keys: wheel turned all the way = this much front-wheel angle.
+    let maxSteer = wheelSteer ? 0.7 / (1 + sp / 120) : 0.40 / (1 + sp / 60);
     // Keys are all-or-nothing, so a held key would always ask for more lock than the tyres can use
     // and scrub off speed. Cap keyboard steering at the grip limit (a wheel/stick can still overdo it).
     if (!wheelSteer) maxSteer = Math.min(maxSteer, Math.atan(maxYaw * 1.05 * WHEELBASE / Math.max(Math.abs(nv), 1)));
@@ -1271,7 +1294,7 @@
     const ot = $('ot');
     ot.textContent = car.boost ? 'OVERTAKE' : car.otAvail ? (car.ers > 0.01 ? 'OVERTAKE READY · SPACE' : 'BATTERY EMPTY') : 'OVERTAKE: GET WITHIN 1s';
     ot.className = car.boost ? 'on' : car.otAvail && car.ers > 0.01 ? 'ready' : '';
-    $('rpmfill').style.width = ((car.rpm - 2000) / (REDLINE - 2000) * 100).toFixed(1) + '%';
+    $('rpmfill').style.width = Math.min(100, (car.rpm - 2000) / (REDLINE - 2000) * 100).toFixed(1) + '%';
     $('h-mode').textContent = '#' + selectedDriver.num + ' ' + selectedDriver.code + '  ·  ' + selectedTeam.name.toUpperCase() + '  ·  ' + (car.auto ? 'AUTOMATIC' : Wheel.state.hasShifter ? 'H-SHIFTER' : Wheel.state.connected ? 'MANUAL  PADDLES' : 'MANUAL  Q/E') + '  ·  ' + CAMERAS[camIdx].toUpperCase();
     const label = car.offTrack ? SURFACES[car.surface].label : car.dirt > 0.2 ? 'DIRTY TYRES' : '';
     $('offtrack').textContent = label;
@@ -1407,6 +1430,20 @@
   }
 
   // Overtake mode is available within 1 s of the car ahead (kept for 2 s after dropping out of range).
+  // Max Verstappen passing you (behind you last frame, now just ahead) plays a piano riff - once per
+  // pass, and not again while it's still playing.
+  let verBehind = null, riffUntil = 0;
+  function checkVerstappenPass() {
+    const ver = field.cars.find(c => c.drv.code === 'VER');
+    if (!ver) return;                                   // you're driving for him
+    const gap = ver.s - playerS, behind = gap < 0;
+    if (verBehind === true && !behind && gap < 30 && race.state === 'racing' && audio && !muted && audio.ctx.currentTime > riffUntil) {
+      riffUntil = audio.ctx.currentTime + LobbyMusic.riff(audio.ctx, audio.ctx.destination);   // own compressor, not squashed by the engine
+      toast('DU DU DU DU MAX VERSTAPPEN', '', 1.8);
+    }
+    verBehind = behind;
+  }
+
   function updateOvertakeWindow(dt) {
     const v = Math.max(Math.abs(car.v), 10);
     let gap = Infinity;
@@ -1518,6 +1555,7 @@
       car.x += T.nx[i] * slot.d; car.z += T.nz[i] * slot.d;
       locateCar(false);
       playerS = slot.s;
+      verBehind = null;
       field.sync(0);
     } else {
       placeCarAt(3);
@@ -1665,6 +1703,7 @@
       if (field && inRace()) {
         field.update(dt, race.state !== 'countdown', race.time, racers());
         updateOvertakeWindow(dt);
+        checkVerstappenPass();
         field.sync(dt);
         carContacts();
       }

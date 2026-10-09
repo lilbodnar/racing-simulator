@@ -11,6 +11,7 @@
 //              'flamenco'  - Spanish guitar: strums, rasgueado, picado runs, cajón and claps
 // The guitar is a physically modelled plucked string (Karplus-Strong).
 // Usage: LobbyMusic.setPlaying(songId or null, audioContext, destination). Changing song crossfades.
+//        LobbyMusic.riff(audioContext, destination) plays the four-note piano riff over the top; returns its length in seconds.
 const LobbyMusic = (() => {
   const BPM = 100, BEAT = 60 / BPM, BAR = BEAT * 4;
   const mtof = m => 440 * Math.pow(2, (m - 69) / 12);
@@ -743,7 +744,30 @@ const LobbyMusic = (() => {
     setTimeout(() => S.out.disconnect(), S.song.barLen * 1000 + 1500);   // let already-scheduled notes finish silently
   }
 
+  // A short, loud piano hit played over everything else (when Max Verstappen passes you): the first
+  // four notes of the tab - low E string 5th fret (A) x3, then A string 7th fret (E), held. Played in
+  // three octaves so it cuts through the engine, through a compressor so it doesn't clip.
+  const RIFF = [[0, 45, 0.18], [0.21, 45, 0.18], [0.42, 45, 0.18], [0.56, 52, 0.9]];   // [time s, midi, length s]
+  function riff(audioCtx, destination) {
+    ctx = audioCtx;
+    buffers();
+    const comp = ctx.createDynamicsCompressor();
+    comp.threshold.value = -12; comp.ratio.value = 6; comp.attack.value = 0.003; comp.release.value = 0.2;
+    comp.connect(destination);
+    const out = ctx.createGain(); out.gain.value = 2.5; out.connect(comp);
+    const dry = ctx.createGain(); dry.connect(out);
+    const verb = ctx.createConvolver(); verb.buffer = irBuf;
+    const verbIn = ctx.createGain(); verbIn.gain.value = 0.25; verbIn.connect(verb); verb.connect(out);
+    const bus = ctx.createGain(); bus.connect(dry); bus.connect(verbIn);
+    const S = { out, dry, bus }, t0 = ctx.currentTime + 0.05;
+    for (const [t, m, len] of RIFF) I.piano(S, t0 + t, [m, m + 12, m + 24], len, 3);
+    const dur = RIFF[RIFF.length - 1][0] + RIFF[RIFF.length - 1][2] + 0.3;
+    setTimeout(() => { out.disconnect(); comp.disconnect(); }, (dur + 3) * 1000);
+    return dur;
+  }
+
   return {
+    riff,
     setPlaying(id, audioCtx, destination) {
       ctx = audioCtx; dest = destination;
       if ((session && session.id) === (id || undefined)) return;
