@@ -627,9 +627,14 @@
   touchPad.addEventListener('pointerdown', e => {
     e.preventDefault();
     const btn = e.target.closest('[data-a]');
-    if (btn) { touchAction(btn.dataset.a); return; }
+    if (btn) { if (btn.dataset.a !== 'tilt') touchAction(btn.dataset.a); return; }
     touchPad.setPointerCapture(e.pointerId);
     fingerAt(e);
+  });
+  // Tilt goes on finger-up: iPhones only let a page ask for motion access when the finger lifts.
+  touchPad.addEventListener('pointerup', e => {
+    const btn = e.target.closest('[data-a]');
+    if (btn && btn.dataset.a === 'tilt') touchAction('tilt');
   });
   touchPad.addEventListener('pointermove', e => { if (fingers.has(e.pointerId)) fingerAt(e); });
   for (const ev of ['pointerup', 'pointercancel', 'lostpointercapture'])
