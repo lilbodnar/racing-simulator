@@ -54,7 +54,7 @@
   .card .tod.night { background: #1d2846; color: #c9d6ff; }
   .card.done { opacity: .8; }
   .team-title { color: #9aa7b4; font-size: 13px; letter-spacing: 1px; margin: 4px 0 8px; }
-  #team-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-bottom: 16px; max-height: 42vh; overflow-y: auto; }
+  #team-grid, #mp-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-bottom: 16px; max-height: 42vh; overflow-y: auto; }
   .team span { display: flex; flex-direction: column; line-height: 1.25; }
   .team small { color: #9aa7b4; font-size: 11px; }
   .seg { display: flex; justify-content: center; gap: 6px; margin-bottom: 10px; }
@@ -84,7 +84,33 @@
   .team:hover { border-color: #5b6b80; }
   .team.sel { border-color: #ffd60a; background: #263244; }
   .team i { width: 26px; height: 18px; border-radius: 4px; flex: none; }
-  @media (max-width: 640px) { #team-grid { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 640px) { #team-grid, #mp-grid { grid-template-columns: repeat(2, 1fr); } }
+
+  /* ---------- Multiplayer ---------- */
+  #menu .mp-row { margin: -8px 0 22px; }
+  #mp { z-index: 12; }
+  #mp .panel-box { width: min(760px, 94vw); max-height: 96vh; overflow-y: auto; }
+  #mp input, #mp select { background: #1c2633; border: 2px solid #2c3a4d; color: #fff; border-radius: 8px;
+    padding: 9px 12px; font-family: inherit; font-size: 16px; }
+  #mp input:focus, #mp select:focus { outline: none; border-color: #ffd60a; }
+  #mp-name { width: 220px; }
+  #mp-code { width: 130px; text-transform: uppercase; letter-spacing: 4px; text-align: center; font-weight: 700; }
+  .mp-line { display: flex; justify-content: center; align-items: center; gap: 10px; flex-wrap: wrap; margin: 12px 0; }
+  .mp-line .lbl { color: #9aa7b4; font-size: 13px; letter-spacing: 1px; }
+  .mp-or { color: #6b7a8c; font-size: 13px; letter-spacing: 2px; margin: 16px 0 4px; }
+  #mp-status { min-height: 1.4em; margin: 10px 0 0; }
+  #mp-status.err { color: #ff6b6b; }
+  .mp-codebox { font-size: 15px; color: #9aa7b4; letter-spacing: 1px; margin-bottom: 14px; }
+  .mp-codebox b { color: #ffd60a; font-size: 34px; letter-spacing: 8px; margin: 0 10px; vertical-align: middle; }
+  .mp-codebox .btn { padding: 7px 14px; font-size: 14px; }
+  #mp-settings .seg { flex-wrap: wrap; align-items: center; }
+  #mp-settings .seg .lbl { color: #9aa7b4; font-size: 13px; letter-spacing: 1px; margin-right: 4px; }
+  #mp-settings-view { margin-bottom: 12px; }
+  #mp-grid .team.taken { cursor: default; opacity: .55; }
+  #mp-grid .team.taken:hover { border-color: #2c3a4d; }
+  #mp-grid .team.taken small { color: #ffd60a; }
+  #mp-grid .team.sel small { color: #ffd60a; }
+  #mp-note { color: #9aa7b4; font-size: 13px; max-width: 560px; margin: 10px auto 0; line-height: 1.5; }
   .controls-box { margin-top: 28px; color: #9aa7b4; font-size: 14px; max-width: 1150px; line-height: 1.7; text-align: center; }
   kbd { background: #253244; border-radius: 4px; padding: 1px 7px; color: #fff; font-family: inherit; font-size: 13px; }
 
@@ -190,6 +216,7 @@
   <h1>RACING <span>SIMULATOR</span></h1>
   <div class="sub" id="menu-sub"></div>
   <div id="input-status"><span id="input-status-text"></span> <button class="btn hidden" id="btn-wheel-setup">Wheel setup</button></div>
+  <div class="mp-row"><button class="btn" id="btn-mp">Multiplayer · race your friends online</button></div>
   <div class="seg music-btns"><span class="lbl">MUSIC</span><button data-music="original">Original</button><button data-music="jazz">Jazz</button><button data-music="classical">Classical</button><button data-music="off">Off</button></div>
   <div class="seg racemusic-btns"><span class="lbl">RACE MUSIC</span><button data-race="on">On</button><button data-race="off">Off</button></div>
   <div id="track-grid"></div>
@@ -217,8 +244,40 @@
   </div>
 </div>
 
+<!-- Multiplayer: connect, then the lobby -->
+<div id="mp" class="screen overlay hidden">
+  <div class="panel-box">
+    <h2>Multiplayer</h2>
+    <div id="mp-connect">
+      <div class="meta">Up to 22 drivers, connected browser to browser. One person hosts and shares the room code.</div>
+      <div class="mp-line"><span class="lbl">YOUR NAME</span><input id="mp-name" maxlength="12" autocomplete="off" spellcheck="false"></div>
+      <button class="btn primary" id="mp-host">HOST A RACE</button>
+      <div class="mp-or">OR JOIN WITH A CODE</div>
+      <div class="mp-line"><input id="mp-code" maxlength="5" placeholder="CODE" autocomplete="off" spellcheck="false"><button class="btn" id="mp-join">Join</button></div>
+      <div class="meta" id="mp-status"></div>
+      <button class="btn" id="mp-back">Back</button>
+    </div>
+    <div id="mp-lobby" class="hidden">
+      <div class="mp-codebox">ROOM CODE <b id="mp-code-show" class="mono"></b><button class="btn" id="mp-copy">Copy invite link</button></div>
+      <div id="mp-settings">
+        <div class="mp-line"><span class="lbl">TRACK</span><select id="mp-track"></select></div>
+        <div class="seg" id="mp-weather"><span class="lbl">WEATHER</span><button data-weather="sunny">Sunny</button><button data-weather="cloudy">Cloudy</button><button data-weather="rainy">Rainy</button><button data-weather="snowy">Snowy</button><button data-weather="hurricane">Hurricane</button></div>
+        <div class="seg" id="mp-fill"><span class="lbl">EMPTY SEATS</span><button data-fill="ai">AI drivers</button><button data-fill="none">Leave empty</button></div>
+        <div class="seg" id="mp-diff"><span class="lbl">AI</span><button data-diff="easy">Easy</button><button data-diff="medium">Medium</button><button data-diff="hard">Hard</button></div>
+      </div>
+      <div class="meta" id="mp-settings-view"></div>
+      <div class="team-title" id="mp-title"></div>
+      <div id="mp-grid"></div>
+      <button class="btn primary" id="mp-start">START RACE</button>
+      <div class="meta" id="mp-wait"></div>
+      <button class="btn" id="mp-leave">Leave</button>
+      <div id="mp-note">Hosting: keep this tab open while you race, because your browser runs the AI cars and passes everyone's positions on.</div>
+    </div>
+  </div>
+</div>
+
 <!-- Loading -->
-<div id="loading" class="screen overlay hidden"><div class="panel-box"><h2>Building circuit…</h2></div></div>
+<div id="loading" class="screen overlay hidden"><div class="panel-box"><h2 id="loading-text">Building circuit…</h2></div></div>
 
 <!-- Pre-race -->
 <div id="prerace" class="screen overlay hidden">
@@ -275,6 +334,8 @@
 <script src="js/wheel.js"></script>
 <script src="js/dancer.js"></script>
 <script src="js/weather.js"></script>
+<script src="js/peerjs.min.js"></script>
+<script src="js/net.js"></script>
 <script src="js/game.js"></script>
 </body>
 </html>

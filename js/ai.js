@@ -58,21 +58,39 @@ function gridSlot(T, k) {
   return { s: -8 - 8 * k, d: (k % 2 ? -1 : 1) * Math.min(2.8, T.hw - 1.2) };
 }
 
-// weatherGrip: tyre grip multiplier from the weather (1 in the dry).
-function createField(T, player, difficulty, laps, scene, shadowTex, weatherGrip = 1) {
+// Floating name tag above a car: team colour bar and `label` (number and code by default).
+function makeNameTag(drv, label = drv.num + ' ' + drv.code) {
+  const c = document.createElement('canvas');
+  const g = c.getContext('2d'), font = 'bold 26px Segoe UI, sans-serif';
+  g.font = font;
+  c.width = Math.max(128, Math.ceil(g.measureText(label).width) + 26); c.height = 40;
+  g.fillStyle = 'rgba(10,14,20,0.75)'; g.fillRect(0, 0, c.width, 40);
+  g.fillStyle = '#' + teamOf(drv).body.toString(16).padStart(6, '0'); g.fillRect(0, 0, 8, 40);
+  g.fillStyle = '#fff'; g.font = font; g.textBaseline = 'middle';
+  g.fillText(label, 16, 21);
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(c), depthTest: false }));
+  sp.scale.set(2.4 * c.width / 128, 0.75, 1);
+  sp.position.y = 2.1;
+  sp.renderOrder = 10;
+  return sp;
+}
+
+// humans: the drivers raced by people (the player, plus everyone else in a multiplayer race);
+// AI drives the rest of the grid unless `fill` is off. weatherGrip: tyre grip multiplier from the
+// weather (1 in the dry).
+function createField(T, humans, difficulty, laps, scene, shadowTex, weatherGrip = 1, fill = true) {
   const diff = DIFFICULTY[difficulty];
   const profile = computeSpeedProfile(T, diff.grip * weatherGrip);
   const N = T.n, maxD = T.hw - 1.2;
-  // Grid: fastest drivers at the front.
-  const order = DRIVERS.slice().sort((a, b) => b.skill - a.skill);
+  // Grid: fastest drivers at the front (just the humans, closed up, when there's no AI).
+  const order = DRIVERS.filter(d => fill || humans.includes(d)).sort((a, b) => b.skill - a.skill);
   const slots = order.map((drv, k) => ({ drv, ...gridSlot(T, k) }));
   const cars = [];
-  let playerSlot = null;
   for (const slot of slots) {
-    if (slot.drv === player) { playerSlot = slot; continue; }
+    if (humans.includes(slot.drv)) continue;
     const model = buildCarModel(teamOf(slot.drv), shadowTex, slot.drv);
     model.group.rotation.order = 'YXZ';
-    model.group.add(nameTag(slot.drv));
+    model.group.add(makeNameTag(slot.drv));
     scene.add(model.group);
     cars.push({
       drv: slot.drv, team: teamOf(slot.drv), model, s: slot.s, d: slot.d, v: 0, dv: 0,
@@ -81,21 +99,7 @@ function createField(T, player, difficulty, laps, scene, shadowTex, weatherGrip 
       latV: 0, yawVel: 0, yawOff: 0, spinT: 0, backoff: 0,   // knocked sideways / spun by contact
     });
   }
-
-  function nameTag(drv) {
-    const c = document.createElement('canvas');
-    c.width = 128; c.height = 40;
-    const g = c.getContext('2d');
-    g.fillStyle = 'rgba(10,14,20,0.75)'; g.fillRect(0, 0, 128, 40);
-    g.fillStyle = '#' + teamOf(drv).body.toString(16).padStart(6, '0'); g.fillRect(0, 0, 8, 40);
-    g.fillStyle = '#fff'; g.font = 'bold 26px Segoe UI, sans-serif'; g.textBaseline = 'middle';
-    g.fillText(drv.num + ' ' + drv.code, 16, 21);
-    const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(c), depthTest: false }));
-    sp.scale.set(2.4, 0.75, 1);
-    sp.position.y = 2.1;
-    sp.renderOrder = 10;
-    return sp;
-  }
+  const slotOf = drv => slots.find(sl => sl.drv === drv);
 
   // Spacing in metres: car length/width, the gap to keep when following, and the sideways step for a pass.
   const CAR_L = 5.6, CAR_W = 2.4, FOLLOW = 8, PASS_W = 3.4;
@@ -104,7 +108,7 @@ function createField(T, player, difficulty, laps, scene, shadowTex, weatherGrip 
     return !sorted.some(o => o !== me && o.s > s0 && o.s < s1 && Math.abs(o.d - d) < CAR_W);
   }
 
-  // racers: every car incl. the player as { s, d, v }.
+  // racers: every car incl. the human ones as { s, d, v }.
   function update(dt, racing, time, racers) {
     const sorted = racers.slice().sort((a, b) => a.s - b.s);
     for (const ai of cars) {
@@ -211,5 +215,5 @@ function createField(T, player, difficulty, laps, scene, shadowTex, weatherGrip 
     }
   }
 
-  return { cars, playerSlot, update, sync, dispose };
+  return { cars, slotOf, update, sync, dispose };
 }

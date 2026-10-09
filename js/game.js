@@ -43,6 +43,23 @@
   let playerS = 0;                   // player's distance raced (same measure as the AI's s)
   let weather = 'sunny';             // key of WEATHERS, remembered between visits
   try { const w = localStorage.getItem('weather'); if (w in WEATHERS) weather = w; } catch (e) { /* storage blocked */ }
+  // Online play (see the Multiplayer section).
+  const mp = {
+    active: false, host: false,       // in an online session (lobby or race); hosting it
+    name: '',                         // your name, remembered between visits
+    players: [],                      // lobby: [{ id, name, drv }], the host is 'host'
+    settings: { track: TRACKS[0].id, weather: 'sunny', fill: true, difficulty: 'medium' },
+    lobbyRacing: false,               // guest: a race was already running when the lobby last changed
+    racing: false, started: false,    // an online race is on; its lights have gone out
+    clock: 0,                         // seconds since lights out (the AI's clock)
+    lineup: [],                       // who's in the race being run
+    remotes: new Map(),               // id -> another person's car
+    raw: new Map(),                   // host: id -> latest state from that guest, to pass on
+    lat: 0, lats: new Map(),          // one-way delay (ms) guest <-> host: guest's own, host's per guest
+    ready: new Set(), readyTimer: 0, goSent: false, goT: 0,
+    sendT: 0, pingT: 0, resultsT: 0,
+  };
+  try { mp.name = localStorage.getItem('racing-sim-name') || ''; } catch (e) {}
 
   const $ = id => document.getElementById(id);
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -568,6 +585,7 @@
     ArrowLeft: 'left', KeyA: 'left', ArrowRight: 'right', KeyD: 'right', Space: 'boost',
   };
   addEventListener('keydown', e => {
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;   // typing a name / room code
     if (KEYMAP[e.code]) { keys[KEYMAP[e.code]] = true; e.preventDefault(); }
     if (e.repeat) return;
     switch (e.code) {
@@ -596,7 +614,7 @@
   // straighten up where you are. Any lap you use it on can't set a record.
   function resetCar() {
     if (race.state !== 'racing' || paused) return;
-    const last = field && field.cars.filter(c => c.finish === null).sort((a, b) => a.s - b.s)[0];
+    const last = field && [...field.cars, ...liveRemotes()].filter(c => c.finish === null).sort((a, b) => a.s - b.s)[0];
     if (!last) { locateCar(true); placeCarAt(car.idx); return; }
     let s = last.s - 12;
     const done = race.laps.length;
@@ -615,7 +633,7 @@
     race.lapTainted = true;
     const N = T.n;
     race.cp = p.i >= Math.floor(N * 2 / 3) ? 2 : p.i >= Math.floor(N / 3) ? 1 : 0;
-    toast('Rejoined behind ' + last.drv.code, '', 1.4);
+    toast('Rejoined behind ' + (last.name || last.drv.code), '', 1.4);
   }
   function shiftUp() { if (car.gear >= 1 && car.gear < 8) { car.gear++; car.shiftTimer = 0.06; } }
   // Down a gear at any speed (no lockout: an over-revving engine just brakes harder).
@@ -640,7 +658,7 @@
   const inRace = () => ['countdown', 'racing', 'finished'].includes(race.state);
 
   function physics(dt) {
-    const controls = race.state === 'racing';
+    const controls = race.state === 'racing' && !paused;
     // Keyboard and wheel / controller both work; analog pedals give partial throttle and brake.
     const W = Wheel.state;
     const thrIn = Math.max(keys.up ? 1 : 0, W.throttle), brkIn = Math.max(keys.down ? 1 : 0, W.brake);
@@ -986,6 +1004,11 @@
         mmg.fillStyle = hex(ai.team.body); mmg.strokeStyle = '#000'; mmg.lineWidth = 2;
         mmg.beginPath(); mmg.arc(ax, ay, 7, 0, Math.PI * 2); mmg.fill(); mmg.stroke();
       }
+    }
+    for (const r of liveRemotes()) {            // other people: bigger, with a white ring
+      const [rx, ry] = mmXf(r.x, r.z);
+      mmg.fillStyle = hex(r.team.body); mmg.strokeStyle = '#fff'; mmg.lineWidth = 3;
+      mmg.beginPath(); mmg.arc(rx, ry, 9, 0, Math.PI * 2); mmg.fill(); mmg.stroke();
     }
     const [cx, cy] = mmXf(car.x, car.z);
     mmg.fillStyle = hex(selectedTeam.body);
@@ -1336,7 +1359,7 @@
     if (toastTimer > 0 && (toastTimer -= dt) <= 0) $('toast').className = '';
     const lapNo = Math.min(race.laps.length + 1, RACE_LAPS);
     $('h-lap').textContent = lapNo + '/' + RACE_LAPS;
-    $('h-pos').textContent = field ? 'P' + playerPosition() + '/' + (field.cars.length + 1) : 'SOLO';
+    $('h-pos').textContent = field ? 'P' + playerPosition() + '/' + (field.cars.length + mp.remotes.size + 1) : 'SOLO';
     const running = race.state === 'racing';
     $('h-cur').textContent = fmt(running ? race.time - race.lapStart : 0);
     $('h-last').textContent = fmt(race.laps[race.laps.length - 1]);
@@ -1489,17 +1512,21 @@
   document.querySelectorAll('.racemusic-btns button').forEach(b => musicButton(b, () => { raceMusic = b.dataset.race === 'on'; }));
   syncMusicBtns();
 
-  // All cars as { s, d, v } for traffic checks and positions.
+  // All cars as { s, d, v } for traffic checks and positions. Once you've seen the results of an
+  // online race your car is off the track, so the others drive through.
   function racers() {
     const me = { s: playerS, d: car.lateral, v: Math.abs(car.v), isPlayer: true };
-    return field ? [me, ...field.cars] : [me];
+    const mine = mp.racing && race.state === 'results' ? [] : [me];
+    return field ? [...mine, ...field.cars, ...liveRemotes()] : mine;
   }
+  // Every other car in the race, finished or not (for positions).
+  const rivals = () => field ? [...field.cars, ...mp.remotes.values()] : [];
   function playerPosition() {
     if (!field) return 1;
     if (race.state === 'finished' || race.state === 'results') {
-      return 1 + field.cars.filter(c => c.finish !== null && c.finish < finalTime()).length;
+      return 1 + rivals().filter(c => c.finish !== null && c.finish < finalTime()).length;
     }
-    return 1 + field.cars.filter(c => c.s > playerS).length;
+    return 1 + rivals().filter(c => c.finish !== null || c.s > playerS).length;
   }
 
   // Overtake mode is available within 1 s of the car ahead (kept for 2 s after dropping out of range).
@@ -1520,43 +1547,72 @@
   function updateOvertakeWindow(dt) {
     const v = Math.max(Math.abs(car.v), 10);
     let gap = Infinity;
-    for (const ai of field.cars) {
-      const d = ai.s - playerS;
+    for (const o of [...field.cars, ...liveRemotes()]) {
+      const d = o.s - playerS;
       if (d > 0 && d < gap) gap = d;
     }
     car.otHold = gap / v < 1 ? 2 : Math.max(0, car.otHold - dt);
     car.otAvail = car.otHold > 0;
   }
 
-  // Player vs AI: oriented-box overlap test (separating axes), then an impulse at the contact
-  // point that changes both cars' speed, sideways motion and spin.
-  function carContacts() {
-    const fx = Math.sin(car.h), fz = Math.cos(car.h);
+  // Oriented-box overlap test (separating axes) between car A and car B. Returns how deep they
+  // overlap, the contact normal (pointing from B to A) and the contact point, or null.
+  function boxOverlap(ax0, az0, ah, bx0, bz0, bh) {
+    const fx = Math.sin(ah), fz = Math.cos(ah), gx = Math.sin(bh), gz = Math.cos(bh);
+    const dx = bx0 - ax0, dz = bz0 - az0;
+    if (dx * dx + dz * dz > 49) return null;
     const inside = (px, pz, cx, cz, f0, f1) => {      // is point inside the box centred c with forward (f0, f1)?
-      const dx = px - cx, dz = pz - cz;
-      return Math.abs(dx * f0 + dz * f1) <= HALF_L && Math.abs(dx * f1 - dz * f0) <= HALF_W;
+      const ex = px - cx, ez = pz - cz;
+      return Math.abs(ex * f0 + ez * f1) <= HALF_L && Math.abs(ex * f1 - ez * f0) <= HALF_W;
     };
     const corners = (cx, cz, f0, f1) => [[1, 1], [1, -1], [-1, 1], [-1, -1]].map(([a, b]) =>
       [cx + f1 * HALF_W * a + f0 * HALF_L * b, cz - f0 * HALF_W * a + f1 * HALF_L * b]);
-    for (const ai of field.cars) {
-      const dx = ai.x - car.x, dz = ai.z - car.z;
-      if (dx * dx + dz * dz > 49) continue;
-      const gx = Math.sin(ai.h), gz = Math.cos(ai.h);
-      let pen = Infinity, nX = 0, nZ = 0;
-      for (const [ax, az] of [[fx, fz], [fz, -fx], [gx, gz], [gz, -gx]]) {
-        const pa = HALF_L * Math.abs(fx * ax + fz * az) + HALF_W * Math.abs(fz * ax - fx * az);
-        const pb = HALF_L * Math.abs(gx * ax + gz * az) + HALF_W * Math.abs(gz * ax - gx * az);
-        const p = pa + pb - Math.abs(dx * ax + dz * az);
-        if (p <= 0) { pen = 0; break; }
-        if (p < pen) { pen = p; nX = ax; nZ = az; }
-      }
-      if (pen <= 0) continue;
-      if (nX * -dx + nZ * -dz < 0) { nX = -nX; nZ = -nZ; }      // normal points from the AI car to us
-      // Contact point: corners of each car inside the other (average), else halfway between them.
-      const pts = corners(car.x, car.z, fx, fz).filter(([px, pz]) => inside(px, pz, ai.x, ai.z, gx, gz))
-        .concat(corners(ai.x, ai.z, gx, gz).filter(([px, pz]) => inside(px, pz, car.x, car.z, fx, fz)));
-      let cx = (car.x + ai.x) / 2, cz = (car.z + ai.z) / 2;
-      if (pts.length) { cx = pts.reduce((a, p) => a + p[0], 0) / pts.length; cz = pts.reduce((a, p) => a + p[1], 0) / pts.length; }
+    let pen = Infinity, nX = 0, nZ = 0;
+    for (const [ax, az] of [[fx, fz], [fz, -fx], [gx, gz], [gz, -gx]]) {
+      const pa = HALF_L * Math.abs(fx * ax + fz * az) + HALF_W * Math.abs(fz * ax - fx * az);
+      const pb = HALF_L * Math.abs(gx * ax + gz * az) + HALF_W * Math.abs(gz * ax - gx * az);
+      const p = pa + pb - Math.abs(dx * ax + dz * az);
+      if (p <= 0) return null;
+      if (p < pen) { pen = p; nX = ax; nZ = az; }
+    }
+    if (nX * -dx + nZ * -dz < 0) { nX = -nX; nZ = -nZ; }
+    // Contact point: corners of each car inside the other (average), else halfway between them.
+    const pts = corners(ax0, az0, fx, fz).filter(([px, pz]) => inside(px, pz, bx0, bz0, gx, gz))
+      .concat(corners(bx0, bz0, gx, gz).filter(([px, pz]) => inside(px, pz, ax0, az0, fx, fz)));
+    let cx = (ax0 + bx0) / 2, cz = (az0 + bz0) / 2;
+    if (pts.length) { cx = pts.reduce((s, p) => s + p[0], 0) / pts.length; cz = pts.reduce((s, p) => s + p[1], 0) / pts.length; }
+    return { pen, nX, nZ, cx, cz };
+  }
+
+  // Impulse between two equal-mass cars meeting at (cx, cz): the player (velocity wx, wz, yaw rate
+  // wp) and another car B (velocity bx, bz, yaw rate wb, centre at ox, oz). Returns the impulse on
+  // the player (B gets the opposite), the closing speed and how hard the hit was, or null if the
+  // cars are already moving apart.
+  function contactImpulse(c, wx, wz, wp, ox, oz, bx, bz, wb) {
+    const { nX, nZ, cx, cz } = c;
+    const rpx = cx - car.x, rpz = cz - car.z, rax = cx - ox, raz = cz - oz;
+    const vrx = (wx + wp * rpz) - (bx + wb * raz), vrz = (wz - wp * rpx) - (bz - wb * rax);
+    const vn = vrx * nX + vrz * nZ;
+    if (vn >= 0) return null;
+    const rpn = cross2(rpx, rpz, nX, nZ), ran = cross2(rax, raz, nX, nZ);
+    // A tap (low closing speed) is soft and barely twists the cars; a real hit bounces and spins.
+    const hard = Math.min(1, -vn / 6);
+    const j = -(1 + 0.2 * hard) * vn / (2 / MASS + rpn * rpn / CAR_I + ran * ran / CAR_I);
+    const qX = -nZ, qZ = nX;
+    const rpt = cross2(rpx, rpz, qX, qZ), rat = cross2(rax, raz, qX, qZ);
+    const jt = clamp(-(vrx * qX + vrz * qZ) / (2 / MASS + rpt * rpt / CAR_I + rat * rat / CAR_I), -0.3 * j, 0.3 * j);
+    const ix = nX * j + qX * jt, iz = nZ * j + qZ * jt;
+    return { ix, iz, vn, hard, spinP: cross2(rpx, rpz, ix, iz) / CAR_I * (0.25 + 0.75 * hard), spinB: -cross2(rax, raz, ix, iz) / CAR_I * (0.25 + 0.75 * hard) };
+  }
+
+  // Player vs AI: an impulse at the contact point changes both cars' speed, sideways motion and spin.
+  // In an online race the host's browser drives the AI, so a guest tells the host what the hit did.
+  function carContacts() {
+    field.cars.forEach((ai, idx) => {
+      const c = boxOverlap(car.x, car.z, car.h, ai.x, ai.z, ai.h);
+      if (!c) return;
+      const { pen, nX, nZ, cx, cz } = c;
+      const s0 = ai.s, d0 = ai.d, y0 = ai.yawVel;
 
       // Separate the cars.
       const p = trackPose(T, ai.s, ai.d);
@@ -1573,35 +1629,46 @@
       }
 
       // Impulse.
-      const rpx = cx - car.x, rpz = cz - car.z, rax = cx - ai.x, raz = cz - ai.z;
-      const [wx, wz] = playerVel(), wp = car.yawVel + car.yawKin;
-      const ax = tX * ai.v + mX * ai.latV, az = tZ * ai.v + mZ * ai.latV, wa = ai.yawVel;
-      const vrx = (wx + wp * rpz) - (ax + wa * raz), vrz = (wz - wp * rpx) - (az - wa * rax);
-      const vn = vrx * nX + vrz * nZ;
-      if (vn >= 0) continue;                                     // already moving apart
-      const rpn = cross2(rpx, rpz, nX, nZ), ran = cross2(rax, raz, nX, nZ);
-      // A tap (low closing speed) is soft and barely twists the cars; a real hit bounces and spins.
-      const hard = Math.min(1, -vn / 6);
-      const j = -(1 + 0.2 * hard) * vn / (2 / MASS + rpn * rpn / CAR_I + ran * ran / CAR_I);
-      const qX = -nZ, qZ = nX;
-      const rpt = cross2(rpx, rpz, qX, qZ), rat = cross2(rax, raz, qX, qZ);
-      const jt = clamp(-(vrx * qX + vrz * qZ) / (2 / MASS + rpt * rpt / CAR_I + rat * rat / CAR_I), -0.3 * j, 0.3 * j);
-      const ix = nX * j + qX * jt, iz = nZ * j + qZ * jt;
-      setPlayerVel(wx + ix / MASS, wz + iz / MASS);
-      car.yawVel += cross2(rpx, rpz, ix, iz) / CAR_I * (0.25 + 0.75 * hard);
-      const nax = ax - ix / MASS, naz = az - iz / MASS;
-      ai.v = Math.max(0, nax * tX + naz * tZ);
-      ai.latV = nax * mX + naz * mZ;
-      if (pinned && Math.sign(ai.latV) === Math.sign(ai.d)) {
-        // The wall stops it, so the sideways push comes back on us instead.
-        const [px, pz] = playerVel();
-        setPlayerVel(px - mX * ai.latV, pz - mZ * ai.latV);
-        ai.latV = 0;
+      const [wx, wz] = playerVel();
+      const ax = tX * ai.v + mX * ai.latV, az = tZ * ai.v + mZ * ai.latV;
+      const k = contactImpulse(c, wx, wz, car.yawVel + car.yawKin, ai.x, ai.z, ax, az, ai.yawVel);
+      if (k) {
+        setPlayerVel(wx + k.ix / MASS, wz + k.iz / MASS);
+        car.yawVel += k.spinP;
+        const nax = ax - k.ix / MASS, naz = az - k.iz / MASS;
+        ai.v = Math.max(0, nax * tX + naz * tZ);
+        ai.latV = nax * mX + naz * mZ;
+        if (pinned && Math.sign(ai.latV) === Math.sign(ai.d)) {
+          // The wall stops it, so the sideways push comes back on us instead.
+          const [px, pz] = playerVel();
+          setPlayerVel(px - mX * ai.latV, pz - mZ * ai.latV);
+          ai.latV = 0;
+        }
+        ai.yawVel += k.spinB;
+        if (ai.s < playerS) ai.backoff = 1.5;                       // the car that hit us from behind lifts off
+        if (Math.abs(ai.yawVel) > 2.2) ai.spinT = 2.5;              // hit hard enough to spin them round
+        impact(-k.vn, cx, car.y + 0.3, cz, nX, nZ);
+        race.hitAt = race.time;
       }
-      ai.yawVel -= cross2(rax, raz, ix, iz) / CAR_I * (0.25 + 0.75 * hard);
-      if (ai.s < playerS) ai.backoff = 1.5;                       // the car that hit us from behind lifts off
-      if (Math.abs(ai.yawVel) > 2.2) ai.spinT = 2.5;              // hit hard enough to spin them round
-      impact(-vn, cx, car.y + 0.3, cz, nX, nZ);
+      if (mp.racing && !mp.host) {
+        Net.send({ t: 'bump', i: idx, ds: ai.s - s0, dd: ai.d - d0, v: ai.v, latV: ai.latV, dy: ai.yawVel - y0, spinT: ai.spinT, backoff: ai.backoff });
+      }
+    });
+  }
+
+  // Player vs another person's car. Both browsers see the contact, and each applies its own half.
+  function remoteContacts() {
+    for (const r of liveRemotes()) {
+      const c = boxOverlap(car.x, car.z, car.h, r.x, r.z, r.h);
+      if (!c) continue;
+      car.x += c.nX * c.pen / 2; car.z += c.nZ * c.pen / 2;
+      const [wx, wz] = playerVel();
+      const fx = Math.sin(r.h), fz = Math.cos(r.h);
+      const k = contactImpulse(c, wx, wz, car.yawVel + car.yawKin, r.x, r.z, fx * r.v + fz * r.vL, fz * r.v - fx * r.vL, r.w);
+      if (!k) continue;
+      setPlayerVel(wx + k.ix / MASS, wz + k.iz / MASS);
+      car.yawVel += k.spinP;
+      impact(-k.vn, c.cx, car.y + 0.3, c.cz, c.nX, c.nZ);
       race.hitAt = race.time;
     }
   }
@@ -1620,7 +1687,7 @@
   function hurricane(dt) {
     if (!WEATHERS[weather].wind || race.state !== 'racing') return;
     const w = wfx.wind;
-    if (field) {
+    if (field && ownsAI()) {
       for (const ai of field.cars) {
         const i = trackPose(T, ai.s, ai.d).i, wl = w.x * T.nx[i] + w.z * T.nz[i];
         ai.latV += wl * Math.abs(wl) * 0.0045 * dt;
@@ -1645,7 +1712,7 @@
         toast(f.kind.name === 'cow' ? 'MOOOOO!' : 'HIT BY FLYING ' + f.kind.name.toUpperCase() + '!', 'red', 1.3);
         continue;
       }
-      if (!field) continue;
+      if (!field || !ownsAI()) continue;
       for (const ai of field.cars) {
         const ex = f.x - ai.x, ez = f.z - ai.z;
         if (ex * ex + ez * ez > (f.r + 1.5) ** 2) continue;
@@ -1672,7 +1739,7 @@
       car.yawVel += (Math.random() < 0.5 ? -1 : 1) * 2.5;
       race.hitAt = race.time;
     }
-    if (field) for (const ai of field.cars) {
+    if (field && ownsAI()) for (const ai of field.cars) {
       if (Math.hypot(x - ai.x, z - ai.z) < 16) knockAI(ai, (Math.random() - 0.5) * 14, -ai.v * 0.3, (Math.random() < 0.5 ? -1 : 1) * 4);
     }
   }
@@ -1704,9 +1771,12 @@
     try { localStorage.setItem(LAST_DRIVER_KEY, lastDriverCode); } catch (e) { /* storage blocked: remember for this session only */ }
     if (document.activeElement) document.activeElement.blur();   // so Space doesn't re-press the button
     if (field) { field.dispose(); field = null; }
-    if (raceMode === 'grid') {
-      field = createField(T, selectedDriver, difficulty, RACE_LAPS, scene, shadowTex, WEATHERS[weather].grip);
-      const slot = field.playerSlot;
+    if (mp.racing || raceMode === 'grid') {
+      // Online: every driver in the lobby is a person; the host's settings decide the AI.
+      const set = mp.racing ? mp.settings : { difficulty, fill: true };
+      const humans = mp.racing ? mp.lineup.map(p => DRIVERS.find(d => d.code === p.drv)) : [selectedDriver];
+      field = createField(T, humans, set.difficulty, RACE_LAPS, scene, shadowTex, WEATHERS[weather].grip, set.fill);
+      const slot = field.slotOf(selectedDriver);
       const i = ((Math.round(slot.s / T.total * T.n) % T.n) + T.n) % T.n;
       placeCarAt(i);
       car.x += T.nx[i] * slot.d; car.z += T.nz[i] * slot.d;
@@ -1724,17 +1794,22 @@
     wfx.reset(); chaosT = 3;
     Object.assign(race, { state: 'countdown', time: 0, lapStart: 0, laps: [], cp: 0, cdT: 0, finishT: 0, newLapRec: false, newRaceRec: false, tainted: false, lapTainted: false, limits: 0, penalty: 0, wide: false, hitAt: -Infinity });
     race.goAt = 5 + 0.4 + Math.random() * 1.2;   // F1-style: five lights, then a random hold before lights out
+    race.waiting = mp.racing;                     // online: lights wait until every driver has loaded
+    if (mp.racing) mpSpawnRemotes();
+    model.group.visible = true;
     paused = false;
     setLights(0);
     show('prerace', false); show('results', false); show('pause', false);
     show('hud', true); show('lights', true);
   }
 
+  let resultsLaps = '';            // your lap table, kept so an online classification can refresh around it
   function showResults() {
     race.state = 'results';
+    if (mp.racing) model.group.visible = false;   // off the track so the others drive through
     const fastest = Math.min(...race.laps);
     const rec = records[T.def.id];
-    $('rs-meta').textContent = `${T.def.name} · ${selectedTeam.name} · ${RACE_LAPS} laps · ${WEATHERS[weather].label}`;
+    $('rs-meta').textContent = `${T.def.name} · ${selectedTeam.name} · ${RACE_LAPS} laps · ${WEATHERS[weather].label}${mp.racing ? ' · online' : ''}`;
     let html = '<table class="laps mono">';
     race.laps.forEach((t, i) => {
       html += `<tr class="${t === fastest ? 'fast' : ''}"><td>Lap ${i + 1}</td><td>${fmt(t)}</td></tr>`;
@@ -1746,28 +1821,36 @@
       <span>Track record lap</span><span class="v">${fmt(rec.bestLap)}</span>
       <span>Best race time</span><span class="v">${fmt(rec.bestRace)}${race.newRaceRec ? ' <span class="newrec">NEW RECORD</span>' : ''}</span>
     </div>`;
-    if (field) html = classification() + html;
-    $('rs-body').innerHTML = html;
+    resultsLaps = html;
+    $('rs-body').innerHTML = field ? classification() + html : html;
+    mpResultsButtons();
     show('hud', false);
     show('results', true);
   }
+  // Online, others are still racing when you finish: update the order as they come in.
+  function refreshClassification() {
+    if (race.state === 'results' && field) $('rs-body').innerHTML = classification() + resultsLaps;
+  }
 
   // Finishing order: finished cars by time, the rest estimated from their remaining distance.
+  // Online, people still racing are marked as running.
   function classification() {
-    const goal = RACE_LAPS * T.total;
+    const goal = RACE_LAPS * T.total, now = mp.racing ? mp.clock : race.time;
     const rows = [{ drv: selectedDriver, team: selectedTeam, t: finalTime(), me: true }];
-    for (const ai of field.cars) {
-      const avg = Math.max(20, ai.s / Math.max(race.time, 1));
-      rows.push({ drv: ai.drv, team: ai.team, t: ai.finish !== null ? ai.finish : race.time + (goal - ai.s) / avg });
+    for (const o of rivals()) {
+      const avg = Math.max(20, o.s / Math.max(now, 1));
+      rows.push({ drv: o.drv, team: o.team, name: o.name, t: o.finish !== null ? o.finish : now + (goal - o.s) / avg, running: o.finish === null && mp.racing });
     }
     rows.sort((a, b) => a.t - b.t);
     let h = '<table class="laps class mono">';
     rows.forEach((r, k) => {
-      const gap = k === 0 ? fmt(r.t) : '+' + (r.t - rows[0].t).toFixed(3);
-      h += `<tr class="${r.me ? 'me' : ''}"><td>P${k + 1}</td><td><i style="background:${hex(r.team.body)}"></i>${r.drv.num} ${r.me ? 'YOU' : r.drv.code}</td><td>${r.team.name}</td><td>${gap}</td></tr>`;
+      const gap = r.running ? 'racing…' : k === 0 ? fmt(r.t) : '+' + (r.t - rows[0].t).toFixed(3);
+      const who = r.me ? 'YOU' : r.name ? escapeHtml(r.name) : r.drv.code;
+      h += `<tr class="${r.me ? 'me' : ''}"><td>P${k + 1}</td><td><i style="background:${hex(r.team.body)}"></i>${r.drv.num} ${who}</td><td>${r.team.name}</td><td>${gap}</td></tr>`;
     });
     return h + '</table>';
   }
+  const escapeHtml = t => String(t).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 
   function goToMenu() {
     if (field) { field.dispose(); field = null; }
@@ -1781,6 +1864,9 @@
   function togglePause() {
     if (!['countdown', 'racing'].includes(race.state)) return;
     paused = !paused;
+    show('btn-restart', !mp.racing);
+    $('btn-quit').textContent = mp.racing ? 'Leave online race' : 'Choose track';
+    $('pause').querySelector('.meta').textContent = mp.racing ? 'Online race: it carries on while this menu is open · Esc to resume' : 'Press Esc to resume';
     show('pause', paused);
   }
 
@@ -1806,16 +1892,432 @@
   $('btn-back').onclick = goToMenu;
   $('btn-resume').onclick = togglePause;
   $('btn-restart').onclick = startRace;
-  $('btn-quit').onclick = goToMenu;
-  $('btn-again').onclick = startRace;
-  $('btn-tracks').onclick = goToMenu;
+  $('btn-quit').onclick = () => mp.racing ? mpLeave() : goToMenu();
+  $('btn-again').onclick = () => mp.racing ? mpBackToLobby() : startRace();
+  $('btn-tracks').onclick = () => mp.racing ? mpLeave() : goToMenu();
   $('menu-sub').textContent = `${SEASON_YEAR} calendar · ${TRACKS.length} rounds · every race is ${RACE_LAPS} laps`;
+
+  // ---------- Multiplayer ----------
+  // Browser to browser through PeerJS (js/net.js). Every browser drives its own car and sends where
+  // it is ~15 times a second; the host passes everyone's cars on, and also drives the AI for the
+  // empty seats and sends those. Between updates, each car carries on at its last speed and is eased
+  // onto the next update so it doesn't jump.
+  const SEND_EVERY = 1 / 15;
+  const ownsAI = () => !mp.racing || mp.host;
+  const r2 = n => Math.round(n * 100) / 100;
+  // Other people's cars that are on the track.
+  function liveRemotes() {
+    const out = [];
+    for (const r of mp.remotes.values()) if (!r.gone) out.push(r);
+    return out;
+  }
+
+  // Your car: position, heading, speeds, steering, distance raced, finish time (-1 still racing),
+  // gone (1 = finished and off the track).
+  function myState() {
+    const gone = race.state === 'results';
+    const fin = race.state === 'finished' || gone ? r2(finalTime()) : -1;
+    return [r2(car.x), r2(car.y + car.bumpY), r2(car.z), r2(wrapAngle(car.h)), r2(car.v), r2(car.vL), r2(car.yawVel + car.yawKin),
+      r2(car.steerAngle), r2(car.pitch), r2(playerS), r2(car.lateral), car.brake > 0.05 ? 1 : 0, fin, gone ? 1 : 0];
+  }
+  // An update for another person's car, `age` seconds old: move it on by that much, then ease
+  // towards it (or jump, if it's far off - a rejoin).
+  function mpApplyCar(r, st, age) {
+    let [x, y, z, h, v, vL, w, steer, pitch, s, d, brake, fin, gone] = st;
+    age = Math.min(age, 0.3);
+    const fx = Math.sin(h), fz = Math.cos(h);
+    x += (fx * v + fz * vL) * age; z += (fz * v - fx * vL) * age; h += w * age; s += v * age;
+    if (Math.hypot(x - r.x, z - r.z) > 25) { Object.assign(r, { x, y, z, h, s, d }); r.err = null; }
+    else r.err = { x: x - r.x, y: y - r.y, z: z - r.z, h: wrapAngle(h - r.h), s: s - r.s, d: d - r.d };
+    Object.assign(r, { v, vL, w, steer, pitch, brake, at: performance.now() });
+    r.finish = fin >= 0 ? fin : null;
+    if (gone && !r.gone && race.state === 'racing') toast(r.name + ' finished', '', 1.4);
+    r.gone = !!gone;
+    r.model.group.visible = !r.gone;
+  }
+  function mpUpdateRemotes(dt) {
+    const k = 1 - Math.exp(-dt * 6);
+    for (const r of mp.remotes.values()) {
+      if (r.gone) continue;
+      if (performance.now() - r.at < 1000) {       // nothing heard for a second: hold it where it is
+        const fx = Math.sin(r.h), fz = Math.cos(r.h);
+        r.x += (fx * r.v + fz * r.vL) * dt; r.z += (fz * r.v - fx * r.vL) * dt;
+        r.h += r.w * dt; r.s += r.v * dt;
+      }
+      if (r.err) for (const key in r.err) { const e = r.err[key] * k; r[key] += e; r.err[key] -= e; }
+      const g = r.model.group;
+      g.position.set(r.x, r.y, r.z);
+      g.rotation.set(-r.pitch, r.h, 0);
+      r.spin += r.v * dt / 0.36;
+      r.model.wheels.forEach(wh => { wh.rotation.x = r.spin; });
+      r.model.frontPivots.forEach(pv => { pv.rotation.y = r.steer; });
+      r.model.brakeMat.color.setHex(r.brake ? 0xff2020 : 0x440000);
+    }
+  }
+  // Each person's car starts on its grid slot.
+  function mpSpawnRemotes() {
+    mpClearRemotes();
+    for (const p of mp.lineup) {
+      if (p.id === Net.id) continue;
+      const drv = DRIVERS.find(d => d.code === p.drv), team = teamOf(drv);
+      const m = buildCarModel(team, shadowTex, drv);
+      m.group.rotation.order = 'YXZ';
+      m.group.add(makeNameTag(drv, p.name));
+      scene.add(m.group);
+      const slot = field.slotOf(drv), g = trackPose(T, slot.s, slot.d);
+      mp.remotes.set(p.id, {
+        id: p.id, name: p.name, drv, team, model: m, x: g.x, y: g.y, z: g.z, h: g.h, pitch: g.pitch,
+        v: 0, vL: 0, w: 0, steer: 0, brake: 0, s: slot.s, d: slot.d, finish: null, gone: false,
+        at: performance.now(), err: null, spin: 0,
+      });
+    }
+    mpUpdateRemotes(0);
+  }
+  function mpRemoveRemote(id) {
+    const r = mp.remotes.get(id);
+    if (!r) return;
+    scene.remove(r.model.group);
+    r.model.group.traverse(o => { if (o.material && o.material.map) o.material.map.dispose(); });
+    disposeGroup(r.model.group);
+    mp.remotes.delete(id);
+  }
+  function mpClearRemotes() { for (const id of [...mp.remotes.keys()]) mpRemoveRemote(id); }
+
+  // Guest: AI cars as the host last sent them, `age` seconds ago.
+  function mpApplyAI(list, age) {
+    if (!field) return;
+    list.forEach((st, i) => {
+      const ai = field.cars[i];
+      if (!ai) return;
+      const [s, d, v, dv, yawOff, latV, yawVel, fin] = st;
+      const ts = s + v * Math.min(age, 0.3);
+      if (Math.abs(ts - ai.s) > 30) { ai.s = ts; ai.d = d; ai.err = null; }
+      else ai.err = { s: ts - ai.s, d: d - ai.d };
+      Object.assign(ai, { v, dv, yawOff, latV, yawVel });
+      ai.finish = fin >= 0 ? fin : null;
+    });
+  }
+  function mpPredictAI(dt) {
+    const k = 1 - Math.exp(-dt * 6);
+    for (const ai of field.cars) {
+      ai.s += ai.v * dt;
+      if (ai.err) {
+        const es = ai.err.s * k, ed = ai.err.d * k;
+        ai.s += es; ai.d += ed; ai.err.s -= es; ai.err.d -= ed;
+      }
+      ai.steer = Math.atan(T.turn[trackPose(T, ai.s, ai.d).i] * 3.6);
+    }
+  }
+
+  // Guest: send your car to the host. Host: send everyone every car (each with how old it is) and
+  // the AI; every 2 s, time a round trip to each guest.
+  function mpSendState(dt) {
+    if ((mp.sendT -= dt) > 0) return;
+    mp.sendT = SEND_EVERY;
+    if (!mp.host) { Net.send({ t: 'car', c: myState() }); return; }
+    const now = performance.now(), cars = { host: [0, ...myState()] };
+    for (const [id, raw] of mp.raw) cars[id] = [Math.round(now - raw.at + raw.lat), ...raw.c];
+    const ai = field ? field.cars.map(a => [r2(a.s), r2(a.d), r2(a.v), r2(a.dv), r2(a.yawOff), r2(a.latV), r2(a.yawVel), a.finish === null ? -1 : r2(a.finish)]) : [];
+    Net.broadcast({ t: 'snap', ai, cars });
+    if ((mp.pingT -= SEND_EVERY) <= 0) {
+      mp.pingT = 2;
+      for (const p of mp.players) if (p.id !== 'host') Net.send({ t: 'ping', k: now, lat: mp.lats.get(p.id) || 0 }, p.id);
+    }
+  }
+
+  // ----- Race start: everyone loads the circuit, then the lights start together -----
+  function mpStartRace() {
+    const msg = { t: 'start', settings: { ...mp.settings }, players: mp.players.map(p => ({ ...p })) };
+    Net.broadcast(msg);
+    mpBeginRace(msg);
+  }
+  function mpBeginRace(msg) {
+    const me = msg.players.find(p => p.id === Net.id);
+    if (!me) return;                    // joined after the grid was set: on the next one
+    mpEndRace();
+    mp.settings = msg.settings; mp.lineup = msg.players;
+    mp.racing = true; mp.started = false; mp.clock = 0; mp.goSent = false; mp.ready.clear();
+    selectedDriver = DRIVERS.find(d => d.code === me.drv); selectedTeam = teamOf(selectedDriver);
+    rebuildCar();
+    weather = msg.settings.weather;
+    syncWeatherBtns();
+    const def = TRACKS.find(t => t.id === msg.settings.track) || TRACKS[0];
+    ['mp', 'menu', 'results', 'pause', 'prerace'].forEach(id => show(id, false));
+    show('loading', true);
+    setTimeout(() => {
+      if (!mp.racing) return;           // left while loading
+      if (!T || T.def !== def) buildTrackScene(def); else applyWeather();
+      race.state = 'prerace';
+      startRace();
+      show('loading', false);
+      toast('Waiting for every driver to load…', '', 60);
+      if (mp.host) {
+        mp.ready.add('host');
+        mp.readyTimer = setTimeout(mpSendGo, 25000);   // don't wait forever for a slow one
+        mpCheckReady();
+      } else Net.send({ t: 'ready' });
+    }, 30);
+  }
+  function mpCheckReady() {
+    if (mp.host && mp.racing && !mp.goSent && mp.lineup.every(p => mp.ready.has(p.id) || !mp.players.some(q => q.id === p.id))) mpSendGo();
+  }
+  function mpSendGo() {
+    if (!mp.racing || mp.goSent) return;
+    mp.goSent = true;
+    clearTimeout(mp.readyTimer);
+    const goAt = 5 + 0.4 + Math.random() * 1.2;
+    Net.broadcast({ t: 'go', goAt });
+    mpGo(goAt);
+  }
+  function mpGo(goAt) {
+    if (!mp.racing || !race.waiting) return;
+    race.waiting = false; race.cdT = 0; race.goAt = goAt;
+    mp.goT = performance.now() - (mp.host ? 0 : mp.lat);   // the host sent it this long ago
+    toast('', '', 0);
+  }
+
+  // ----- Leaving -----
+  function mpEndRace() {
+    mp.racing = false; mp.started = false;
+    clearTimeout(mp.readyTimer);
+    mpClearRemotes();
+    mp.raw.clear();
+  }
+  // Host: ends the race for everyone. Guest: leaves this race, stays in the lobby.
+  function mpBackToLobby() {
+    const ending = mp.host && mp.racing;
+    mpEndRace();
+    if (ending) Net.broadcast(mpLobbyMsg());
+    goToMenu();
+    openMp();
+  }
+  function mpLeave(reason) {
+    mpEndRace();
+    Net.close();
+    mp.active = mp.host = false;
+    mp.players = [];
+    goToMenu();
+    if (reason) { openMp(); mpStatus(reason, true); }
+  }
+  function mpResultsButtons() {
+    $('btn-again').textContent = !mp.racing ? 'RACE AGAIN' : mp.host ? 'END RACE · BACK TO LOBBY' : 'BACK TO LOBBY';
+    $('btn-tracks').textContent = mp.racing ? 'Leave online race' : 'Choose track';
+  }
+
+  // ----- Messages -----
+  const mpLobbyMsg = () => ({ t: 'lobby', players: mp.players, settings: mp.settings, racing: mp.racing });
+  function mpLobbyChanged() {
+    Net.broadcast(mpLobbyMsg());
+    if (!mp.racing) renderLobby();
+  }
+  const takenBy = code => mp.players.find(p => p.drv === code);
+  const cleanName = n => String(n || '').replace(/\s+/g, ' ').trim().slice(0, 12) || 'Driver';
+
+  Net.on('msg', (m, from) => {
+    if (!m || typeof m !== 'object') return;
+    if (mp.host) hostMsg(m, from); else guestMsg(m);
+  });
+  function hostMsg(m, from) {
+    const p = mp.players.find(q => q.id === from);
+    switch (m.t) {
+      case 'hello': {
+        if (p) return;
+        if (mp.players.length >= Net.MAX_PLAYERS) { Net.send({ t: 'full' }, from); setTimeout(() => Net.kick(from), 500); return; }
+        const want = DRIVERS.find(d => d.code === m.want && !takenBy(d.code));
+        const drv = want || DRIVERS.find(d => !takenBy(d.code));
+        mp.players.push({ id: from, name: cleanName(m.name), drv: drv.code });
+        mpLobbyChanged();
+        break;
+      }
+      case 'pick':
+        if (p && DRIVERS.some(d => d.code === m.drv) && !takenBy(m.drv)) { p.drv = m.drv; mpLobbyChanged(); }
+        break;
+      case 'ready': mp.ready.add(from); mpCheckReady(); break;
+      case 'car': {
+        if (!mp.racing || !Array.isArray(m.c)) return;
+        const lat = mp.lats.get(from) || 0;
+        mp.raw.set(from, { c: m.c, at: performance.now(), lat });
+        const r = mp.remotes.get(from);
+        if (r) mpApplyCar(r, m.c, lat / 1000);
+        break;
+      }
+      case 'pong': {
+        const half = (performance.now() - m.k) / 2, old = mp.lats.get(from);
+        mp.lats.set(from, old == null ? half : old * 0.7 + half * 0.3);
+        break;
+      }
+      case 'bump': {                    // a guest hit an AI car: apply what the hit did to it
+        const ai = mp.racing && field && field.cars[m.i];
+        if (!ai) return;
+        ai.s += m.ds; ai.d += m.dd; ai.v = m.v; ai.latV = m.latV; ai.yawVel += m.dy;
+        ai.spinT = Math.max(ai.spinT, m.spinT); ai.backoff = Math.max(ai.backoff, m.backoff);
+        break;
+      }
+    }
+  }
+  function guestMsg(m) {
+    switch (m.t) {
+      case 'lobby':
+        mp.players = m.players; mp.settings = m.settings; mp.lobbyRacing = m.racing;
+        if (mp.racing && !m.racing) mpBackToLobby();          // the host ended the race
+        else if (!mp.racing) { show('mp', true); renderLobby(); }
+        break;
+      case 'full': mpLeave('That race is full (22 drivers).'); break;
+      case 'start': mpBeginRace(m); break;
+      case 'go': mpGo(m.goAt); break;
+      case 'ping': mp.lat = m.lat; Net.send({ t: 'pong', k: m.k }); break;
+      case 'snap': {
+        if (!mp.racing) return;
+        for (const id in m.cars) {
+          const r = mp.remotes.get(id);
+          if (r) mpApplyCar(r, m.cars[id].slice(1), (m.cars[id][0] + mp.lat) / 1000);
+        }
+        mpApplyAI(m.ai, mp.lat / 1000);
+        break;
+      }
+      case 'left': {
+        const r = mp.remotes.get(m.id);
+        if (r) { if (race.state === 'racing') toast(r.name + ' left the race', '', 1.6); mpRemoveRemote(m.id); }
+        break;
+      }
+    }
+  }
+  Net.on('leave', id => {
+    const p = mp.players.find(q => q.id === id);
+    mp.players = mp.players.filter(q => q.id !== id);
+    mp.raw.delete(id); mp.lats.delete(id);
+    if (mp.remotes.has(id)) {
+      if (race.state === 'racing' && p) toast(p.name + ' left the race', '', 1.6);
+      mpRemoveRemote(id);
+      Net.broadcast({ t: 'left', id });
+    }
+    mpLobbyChanged();
+    mpCheckReady();
+  });
+  Net.on('lost', () => mpLeave('Lost the connection to the host.'));
+
+  // ----- Screens -----
+  function mpStatus(text, err) {
+    $('mp-status').textContent = text;
+    $('mp-status').classList.toggle('err', !!err);
+  }
+  function openMp() {
+    show('mp', true);
+    if (mp.active) { renderLobby(); return; }
+    show('mp-connect', true); show('mp-lobby', false);
+    $('mp-name').value = mp.name;
+  }
+  function takeName() {
+    const n = $('mp-name').value.replace(/\s+/g, ' ').trim().slice(0, 12);
+    if (!n) { mpStatus('Enter your name first', true); $('mp-name').focus(); return false; }
+    mp.name = n;
+    try { localStorage.setItem('racing-sim-name', n); } catch (e) {}
+    return true;
+  }
+  function renderLobby() {
+    show('mp-connect', false); show('mp-lobby', true);
+    $('mp-code-show').textContent = Net.code || '';
+    const S = mp.settings, host = mp.host, n = mp.players.length;
+    ['mp-settings', 'mp-start', 'mp-note'].forEach(id => show(id, host));
+    ['mp-settings-view', 'mp-wait'].forEach(id => show(id, !host));
+    const ai = S.fill ? Math.max(0, DRIVERS.length - n) : 0;
+    if (host) {
+      $('mp-track').value = S.track;
+      document.querySelectorAll('#mp-weather button').forEach(b => b.classList.toggle('sel', b.dataset.weather === S.weather));
+      document.querySelectorAll('#mp-fill button').forEach(b => b.classList.toggle('sel', (b.dataset.fill === 'ai') === S.fill));
+      document.querySelectorAll('#mp-diff button').forEach(b => b.classList.toggle('sel', b.dataset.diff === S.difficulty));
+      show('mp-diff', S.fill);
+      $('mp-start').textContent = `START RACE · ${n} ${n === 1 ? 'driver' : 'drivers'}${ai ? ' + ' + ai + ' AI' : ''}`;
+    } else {
+      const def = TRACKS.find(t => t.id === S.track) || TRACKS[0];
+      $('mp-settings-view').textContent = `${def.name} · ${WEATHERS[S.weather].label} · ${ai ? ai + ' AI cars (' + DIFFICULTY[S.difficulty].label.toLowerCase() + ')' : 'no AI'} · ${RACE_LAPS} laps`;
+      $('mp-wait').textContent = mp.lobbyRacing ? 'A race is on right now. You\'ll be on the grid for the next one.' : 'Waiting for the host to start the race…';
+    }
+    $('mp-title').textContent = `DRIVERS ${n}/${Net.MAX_PLAYERS} · CLICK A FREE CAR TO TAKE IT`;
+    const box = $('mp-grid');
+    box.innerHTML = '';
+    for (const drv of DRIVERS) {
+      const team = teamOf(drv), owner = takenBy(drv.code), me = owner && owner.id === Net.id;
+      const b = document.createElement('button');
+      b.className = 'team' + (me ? ' sel' : owner ? ' taken' : '');
+      b.innerHTML = `<i style="background:linear-gradient(135deg, ${hex(team.body)} 0 50%, ${hex(team.second === team.body ? team.accent : team.second)} 50% 80%, ${hex(team.stripe)} 80%)"></i><span><b></b><small></small></span>`;
+      b.querySelector('b').textContent = `${drv.num} ${drv.name}`;
+      b.querySelector('small').textContent = owner ? (me ? 'You' : owner.name) + (owner.id === 'host' ? ' · host' : '') : team.name;
+      if (!owner) b.onclick = () => mpPick(drv.code);
+      box.appendChild(b);
+    }
+  }
+  function mpPick(code) {
+    if (!mp.host) { Net.send({ t: 'pick', drv: code }); return; }
+    if (takenBy(code)) return;
+    mp.players.find(p => p.id === 'host').drv = code;
+    mpLobbyChanged();
+  }
+
+  $('btn-mp').onclick = openMp;
+  $('mp-back').onclick = () => show('mp', false);
+  $('mp-host').onclick = async () => {
+    if (!takeName()) return;
+    mpStatus('Opening a room…');
+    try {
+      await Net.host();
+      const now = new Date();
+      mp.active = true; mp.host = true;
+      mp.settings = { track: (TRACKS.find(d => raceEndDate(d) >= now) || TRACKS[0]).id, weather, fill: true, difficulty };
+      mp.players = [{ id: 'host', name: mp.name, drv: selectedDriver.code }];
+      mpStatus('');
+      renderLobby();
+    } catch (e) { mpStatus(e.message, true); }
+  };
+  async function mpJoin() {
+    if (!takeName()) return;
+    const code = $('mp-code').value.trim().toUpperCase();
+    if (code.length !== 5) { mpStatus('Enter the 5-character room code', true); return; }
+    mpStatus('Connecting…');
+    try {
+      await Net.join(code);
+      mp.active = true; mp.host = false; mp.players = [];
+      Net.send({ t: 'hello', name: mp.name, want: selectedDriver.code });
+      mpStatus('Connected · waiting for the lobby…');
+    } catch (e) { mpStatus(e.message, true); }
+  }
+  $('mp-join').onclick = mpJoin;
+  $('mp-code').addEventListener('keydown', e => { if (e.key === 'Enter') mpJoin(); });
+  $('mp-leave').onclick = () => { mpLeave(); openMp(); };
+  $('mp-start').onclick = mpStartRace;
+  $('mp-copy').onclick = () => {
+    // Opened from a file on disk, the link points at the published game instead.
+    const base = location.protocol === 'file:' ? 'https://lilbodnar.github.io/racing-simulator/' : location.href.split(/[?#]/)[0];
+    const url = base + '?join=' + Net.code;
+    const copied = () => { $('mp-copy').textContent = 'Link copied'; setTimeout(() => { $('mp-copy').textContent = 'Copy invite link'; }, 1600); };
+    if (navigator.clipboard) navigator.clipboard.writeText(url).then(copied, () => prompt('Invite link', url));
+    else prompt('Invite link', url);
+  };
+  // Host settings.
+  $('mp-track').innerHTML = TRACKS.map(d => `<option value="${d.id}">Round ${d.round} · ${escapeHtml(d.name)}</option>`).join('');
+  $('mp-track').onchange = () => { mp.settings.track = $('mp-track').value; mpLobbyChanged(); };
+  document.querySelectorAll('#mp-weather button').forEach(b => { b.onclick = () => { mp.settings.weather = b.dataset.weather; mpLobbyChanged(); }; });
+  document.querySelectorAll('#mp-fill button').forEach(b => { b.onclick = () => { mp.settings.fill = b.dataset.fill === 'ai'; mpLobbyChanged(); }; });
+  document.querySelectorAll('#mp-diff button').forEach(b => { b.onclick = () => { mp.settings.difficulty = b.dataset.diff; mpLobbyChanged(); }; });
+  // An invite link (?join=CODE) opens the join screen with the code filled in.
+  const invite = new URLSearchParams(location.search).get('join');
+  if (invite) {
+    $('mp-code').value = invite.toUpperCase().slice(0, 5);
+    openMp();
+    mpStatus('Enter your name and press Join');
+  }
 
   // ---------- Main loop ----------
   let last = performance.now();
   function frame(now) {
     requestAnimationFrame(frame);
-    const dt = Math.min(0.05, (now - last) / 1000);
+    tick(now, true);
+  }
+  // A hidden tab gets no animation frames. In an online race keep simulating (and sending) anyway,
+  // on a timer, so your car - and, if you host, the AI - doesn't freeze for everyone else.
+  setInterval(() => { if (document.hidden && mp.racing) tick(performance.now(), false); }, 50);
+  function tick(now, render) {
+    const dt = Math.min(0.05, Math.max(0, now - last) / 1000);
     last = now;
     Wheel.poll();
     for (const a of Wheel.takeActions()) wheelAction(a);
@@ -1837,12 +2339,16 @@
     }
     if (race.state === 'menu' || !T) return;
 
-    if (!paused) {
-      if (race.state === 'countdown') {
-        race.cdT += dt;
+    // Pausing an online race only opens the menu: the race carries on (your car coasts).
+    const frozen = paused && !mp.racing;
+    if (!frozen) {
+      if (race.state === 'countdown' && !race.waiting) {
+        // Online the lights run on the real clock, so they go out together even on a slow computer.
+        race.cdT = mp.racing ? (now - mp.goT) / 1000 : race.cdT + dt;
         setLights(race.cdT >= race.goAt ? 0 : Math.min(5, Math.floor(race.cdT)));
         if (race.cdT >= race.goAt) {
           race.state = 'racing';
+          mp.started = true;
           show('lights', false);
           toast('GO!', 'green', 1.2);
         }
@@ -1860,12 +2366,20 @@
           playerS += dd;
         }
       }
-      if (field && inRace()) {
-        field.update(dt, race.state !== 'countdown', race.time, racers());
-        updateOvertakeWindow(dt);
-        checkVerstappenPass();
+      if (mp.racing && mp.started) mp.clock += dt;
+      // Online the host's browser keeps driving the AI after its own race ends, for the others.
+      if (field && (inRace() || mp.racing)) {
+        if (ownsAI()) field.update(dt, mp.racing ? mp.started : race.state !== 'countdown', mp.racing ? mp.clock : race.time, racers());
+        else mpPredictAI(dt);
+        if (inRace()) { updateOvertakeWindow(dt); checkVerstappenPass(); }
         field.sync(dt);
-        carContacts();
+        if (inRace()) carContacts();
+      }
+      if (mp.racing) {
+        mpUpdateRemotes(dt);
+        if (inRace()) remoteContacts();
+        mpSendState(dt);
+        if (race.state === 'results' && (mp.resultsT -= dt) <= 0) { mp.resultsT = 1; refreshClassification(); }
       }
       if (inRace()) hurricane(dt);
       if (race.state === 'finished') {
@@ -1875,13 +2389,14 @@
       if (inRace()) updateHud(dt);
       scenery.update(dt);
     }
-    if (!paused && inRace()) surfaceEffects(dt);
+    if (!render) return;
+    if (!frozen && inRace()) surfaceEffects(dt);
     syncModel();
-    updateDebris(paused ? 0 : dt);
-    updateDust(paused ? 0 : dt);
-    if (field && !inRace()) field.sync(0);
+    updateDebris(frozen ? 0 : dt);
+    updateDust(frozen ? 0 : dt);
+    if (field && !inRace() && !mp.racing) field.sync(0);
     updateCamera(dt);
-    wfx.update(paused ? 0 : dt, camera.position, car, T.groundAt, !muted && !paused, lightningStrike);
+    wfx.update(frozen ? 0 : dt, camera.position, car, T.groundAt, !muted && !paused, lightningStrike);
     scenery.sky.position.copy(camera.position);
     updateAudio();
     renderer.render(scene, camera);
