@@ -21,6 +21,17 @@ A 2026-season F1 racing game that runs in the browser. Pick a circuit from the c
 
 Steering wheels, pedals, H-shifters and game controllers are supported too.
 
+## Phones and tablets
+
+Open the link on your phone and it shows on-screen controls: ◀ ▶ to steer, GAS, BRAKE and OVERTAKE, plus pause, camera and rejoin buttons. Tap **TILT STEER** during a race to steer by tilting the phone like a steering wheel.
+
+To install it as an app with its own home-screen icon, which opens full screen:
+
+- **iPhone / iPad (Safari):** Share → **Add to Home Screen**
+- **Android (Chrome):** ⋮ menu → **Add to Home screen** or **Install app**
+
+Once installed it also works offline for single-player races.
+
 ## Multiplayer
 
 Race up to 22 people, one per car on the grid.

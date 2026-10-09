@@ -73,7 +73,9 @@
 
   // ---------- Renderer & scene ----------
   const renderer = new THREE.WebGLRenderer({ antialias: true });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  const isTouch = matchMedia('(pointer: coarse)').matches;
+  if (isTouch) document.body.classList.add('touch');
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, isTouch ? 1.5 : 2));   // phones: fewer pixels, smoother frame rate
   renderer.setSize(innerWidth, innerHeight);
   $('game').appendChild(renderer.domElement);
 
@@ -607,6 +609,73 @@
   });
   document.addEventListener('visibilitychange', () => { if (document.hidden) autoPause(); });
 
+  // On-screen touch controls. Each finger is tracked on its own, so you can hold gas and steer
+  // together and slide a thumb from one button to the next.
+  const tk = {};                       // pressed touch buttons: up / down / left / right / boost
+  const fingers = new Map();           // pointerId -> data-k of the button under it
+  function touchKeys() {
+    for (const k of ['up', 'down', 'left', 'right', 'boost']) tk[k] = false;
+    for (const k of fingers.values()) if (k) tk[k] = true;
+    document.querySelectorAll('#touch [data-k]').forEach(b => b.classList.toggle('on', !!tk[b.dataset.k]));
+  }
+  function fingerAt(e) {
+    const el = document.elementFromPoint(e.clientX, e.clientY);
+    fingers.set(e.pointerId, el && el.closest && el.closest('#touch [data-k]') ? el.closest('[data-k]').dataset.k : null);
+    touchKeys();
+  }
+  const touchPad = $('touch');
+  touchPad.addEventListener('pointerdown', e => {
+    e.preventDefault();
+    const btn = e.target.closest('[data-a]');
+    if (btn) { touchAction(btn.dataset.a); return; }
+    touchPad.setPointerCapture(e.pointerId);
+    fingerAt(e);
+  });
+  touchPad.addEventListener('pointermove', e => { if (fingers.has(e.pointerId)) fingerAt(e); });
+  for (const ev of ['pointerup', 'pointercancel', 'lostpointercapture'])
+    touchPad.addEventListener(ev, e => { fingers.delete(e.pointerId); touchKeys(); });
+  addEventListener('blur', () => { fingers.clear(); touchKeys(); });
+  function touchAction(a) {
+    if (a === 'tilt') toggleTilt();
+    else wheelAction(a);
+  }
+
+  // Tilt steering: hold the phone sideways like a steering wheel. Full lock at about 30 degrees.
+  let tiltOn = false, tiltSteer = 0;
+  addEventListener('deviceorientation', e => {
+    if (e.beta === null || e.gamma === null) return;
+    const r = Math.PI / 180, b = e.beta * r, g = e.gamma * r;
+    const up = [-Math.cos(b) * Math.sin(g), Math.sin(b)];   // "up" in the phone's own x / y axes
+    const a = ((screen.orientation && screen.orientation.angle) ?? window.orientation ?? 0) * r;
+    const sideways = up[0] * Math.cos(a) - up[1] * Math.sin(a);   // along the screen's left-right axis
+    const roll = Math.asin(clamp(sideways, -1, 1)) / (30 * r);
+    tiltSteer = Math.abs(roll) < 0.06 ? 0 : clamp(roll, -1, 1);
+  });
+  async function toggleTilt() {
+    if (!tiltOn && window.DeviceOrientationEvent && DeviceOrientationEvent.requestPermission) {
+      try {   // iPhone / iPad ask for permission first
+        if (await DeviceOrientationEvent.requestPermission() !== 'granted') { toast('Motion access denied', 'red', 1.6); return; }
+      } catch (err) { toast('Tilt steering not available', 'red', 1.6); return; }
+    }
+    tiltOn = !tiltOn;
+    document.body.classList.toggle('tilt', tiltOn);
+    $('t-tilt').classList.toggle('on', tiltOn);
+    toast(tiltOn ? 'Tilt steering' : 'Button steering', '', 1.2);
+  }
+
+  // Phones: keep the screen awake and go full screen in landscape while racing.
+  let wakeLock = null;
+  function racingMode(on) {
+    document.body.classList.toggle('racing', on);
+    if (!isTouch) return;
+    if (on) {
+      if (navigator.wakeLock && !wakeLock) navigator.wakeLock.request('screen').then(l => { wakeLock = l; l.addEventListener('release', () => { wakeLock = null; }); }).catch(() => {});
+      const de = document.documentElement;
+      if (!document.fullscreenElement && de.requestFullscreen)
+        de.requestFullscreen({ navigationUI: 'hide' }).then(() => screen.orientation && screen.orientation.lock && screen.orientation.lock('landscape')).catch(() => {});
+    } else if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
+  }
+
   function cycleCamera() {
     if (inRace()) { camIdx = (camIdx + 1) % CAMERAS.length; toast(CAMERAS[camIdx] + ' camera', '', 1.2); }
   }
@@ -646,6 +715,7 @@
     if (a === 'pause') togglePause();
     else if (a === 'camera') cycleCamera();
     else if (a === 'reset') resetCar();
+    else if (a === 'tilt') toggleTilt();
     else if ((a === 'shiftUp' || a === 'shiftDown') && inRace() && !paused) {
       manualShift();
       if (a === 'shiftUp') shiftUp(); else shiftDown();
@@ -661,16 +731,17 @@
     const controls = race.state === 'racing' && !paused;
     // Keyboard and wheel / controller both work; analog pedals give partial throttle and brake.
     const W = Wheel.state;
-    const thrIn = Math.max(keys.up ? 1 : 0, W.throttle), brkIn = Math.max(keys.down ? 1 : 0, W.brake);
+    const thrIn = Math.max(keys.up || tk.up ? 1 : 0, W.throttle), brkIn = Math.max(keys.down || tk.down ? 1 : 0, W.brake);
     const up = controls && thrIn > 0.1, down = controls && brkIn > 0.1;
-    const kSteer = (keys.left ? 1 : 0) - (keys.right ? 1 : 0);
+    const kSteer = (keys.left || tk.left ? 1 : 0) - (keys.right || tk.right ? 1 : 0);
     const wheelSteer = W.connected && !kSteer;
-    const steerTarget = controls ? (wheelSteer ? W.steer : kSteer) : 0;
+    const tilt = tiltOn && !kSteer && !W.connected;
+    const steerTarget = controls ? (wheelSteer ? W.steer : tilt ? tiltSteer : kSteer) : 0;
     const finishing = race.state === 'finished';
 
     car.throttle = approach(car.throttle, race.state === 'countdown' || controls ? thrIn : 0, dt * (W.connected ? 12 : 6));
     car.brake = approach(car.brake, finishing ? 0.35 : controls ? brkIn : 0, dt * (W.connected ? 14 : 8));
-    car.steerIn = approach(car.steerIn, steerTarget, dt * (wheelSteer ? 15 : steerTarget ? 3.2 : 6));
+    car.steerIn = approach(car.steerIn, steerTarget, dt * (wheelSteer || tilt ? 15 : steerTarget ? 3.2 : 6));
 
     if (race.state === 'countdown') {    // rev the engine on the grid
       car.rpm = approach(car.rpm, IDLE_RPM + car.throttle * 7500, dt * 30000);
@@ -733,7 +804,7 @@
       car.shiftTimer -= dt;
       // Overtake mode: extra electric power while Space is held, the battery has charge and
       // (in a full-grid race) we are within a second of the car ahead.
-      car.boost = controls && (keys.boost || W.boost) && car.otAvail && car.ers > 0.01 && car.throttle > 0.5 && car.gear >= 1;
+      car.boost = controls && (keys.boost || tk.boost || W.boost) && car.otAvail && car.ers > 0.01 && car.throttle > 0.5 && car.gear >= 1;
       const power = POWER + (car.boost ? OT_POWER : 0);
       let engineA = 0;
       if (car.gear >= 1 && !car.neutral && car.shiftTimer <= 0) {
@@ -1374,7 +1445,7 @@
     $('h-gear').textContent = car.neutral ? 'N' : car.gear === -1 ? 'R' : car.gear;
     $('ersfill').style.width = (car.ers * 100).toFixed(0) + '%';
     const ot = $('ot');
-    ot.textContent = car.boost ? 'OVERTAKE' : car.otAvail ? (car.ers > 0.01 ? 'OVERTAKE READY · SPACE' : 'BATTERY EMPTY') : 'OVERTAKE: GET WITHIN 1s';
+    ot.textContent = car.boost ? 'OVERTAKE' : car.otAvail ? (car.ers > 0.01 ? (isTouch ? 'OVERTAKE READY' : 'OVERTAKE READY · SPACE') : 'BATTERY EMPTY') : 'OVERTAKE: GET WITHIN 1s';
     ot.className = car.boost ? 'on' : car.otAvail && car.ers > 0.01 ? 'ready' : '';
     $('rpmfill').style.width = Math.min(100, (car.rpm - 2000) / (REDLINE - 2000) * 100).toFixed(1) + '%';
     $('h-mode').textContent = '#' + selectedDriver.num + ' ' + selectedDriver.code + '  ·  ' + selectedTeam.name.toUpperCase() + '  ·  ' + (car.auto ? 'AUTOMATIC' : Wheel.state.hasShifter ? 'H-SHIFTER' : Wheel.state.connected ? 'MANUAL  PADDLES' : 'MANUAL  Q/E') + '  ·  ' + CAMERAS[camIdx].toUpperCase();
@@ -1390,7 +1461,10 @@
   }
 
   // ---------- Screens ----------
-  const show = (id, on) => $(id).classList.toggle('hidden', !on);
+  const show = (id, on) => {
+    $(id).classList.toggle('hidden', !on);
+    if (id === 'hud') racingMode(on);
+  };
   const hex = c => '#' + c.toString(16).padStart(6, '0');
   const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   function raceEndDate(def) {
@@ -1875,7 +1949,7 @@
   function updateInputStatus() {
     const W = Wheel.state;
     let t;
-    if (!W.connected) t = 'Keyboard · to use a wheel or controller, plug it in and press any button on it';
+    if (!W.connected) t = isTouch ? 'Touch controls · Bluetooth controllers work too' : 'Keyboard · to use a wheel or controller, plug it in and press any button on it';
     else if (W.isWheel) t = `Wheel: ${W.name}${W.configured ? '' : ' · not set up yet, using default mapping'}`;
     else t = `Controller: ${W.name} · left stick steer, triggers gas/brake, bumpers shift, A overtake`;
     if (t === inputStatusText) return;

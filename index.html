@@ -2,8 +2,16 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
 <title>Racing Simulator</title>
+<meta name="theme-color" content="#0d1117">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Racing Sim">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <style>
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; overflow: hidden; background: #0d1117; color: #f0f3f6;
@@ -27,12 +35,12 @@
   #wheel-setup p { max-width: 460px; line-height: 1.5; font-size: 17px; }
   #ws-live { color: #9aa7b4; min-height: 1.4em; margin-bottom: 14px; }
   #splash { position: fixed; inset: 0; z-index: 50; display: flex; flex-direction: column; align-items: center;
-    justify-content: center; gap: 22px; cursor: pointer; transition: opacity 0.6s;
+    justify-content: center; gap: 22px; cursor: pointer; transition: opacity 0.6s, visibility 0s 0.6s;
     background: radial-gradient(ellipse at center, #1d2a3a, #05070a 75%); }
   #splash h1 { margin: 0; font-size: 56px; letter-spacing: 8px; font-weight: 800; font-style: italic; }
   #splash h1 span { color: #e10600; }
   #splash .press { color: #c9d3dd; letter-spacing: 4px; animation: splash-blink 1.4s ease-in-out infinite; }
-  #splash.gone { opacity: 0; pointer-events: none; }
+  #splash.gone { opacity: 0; visibility: hidden; }   /* stays clickable while it fades, so the tap doesn't land on the menu */
   @keyframes splash-blink { 50% { opacity: 0.25; } }
   #track-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 18px;
     width: 100%; max-width: 1150px; }
@@ -166,6 +174,42 @@
   #offtrack { position: absolute; bottom: 140px; left: 50%; transform: translateX(-50%); font-weight: 800;
     color: #ffd60a; font-size: 22px; letter-spacing: 3px; text-shadow: 0 2px 8px #000; }
   #help { position: absolute; left: 16px; bottom: 14px; font-size: 12px; color: #d0d7de; }
+
+  /* ---------- Touch screens (phones, tablets) ---------- */
+  html, body { touch-action: manipulation; -webkit-tap-highlight-color: transparent; -webkit-touch-callout: none; }
+  #touch, #rotate, .touch-only { display: none; }
+  body.touch .touch-only { display: revert; }
+  body.touch .key-only, body.touch #help { display: none; }
+  body.touch #touch { display: block; }
+  #touch { position: absolute; inset: 0; touch-action: none; }
+  #touch .tb { position: absolute; pointer-events: auto; display: flex; align-items: center; justify-content: center;
+    background: rgba(10, 14, 20, .45); border: 2px solid rgba(255, 255, 255, .28); border-radius: 18px;
+    color: #fff; font-weight: 800; font-size: 15px; letter-spacing: 1px; }
+  #touch .tb.on { background: rgba(255, 255, 255, .3); border-color: #fff; }
+  #t-left, #t-right { bottom: calc(18px + env(safe-area-inset-bottom)); width: 96px; height: 96px; font-size: 34px; }
+  #t-left { left: calc(18px + env(safe-area-inset-left)); }
+  #t-right { left: calc(126px + env(safe-area-inset-left)); }
+  body.tilt #t-left, body.tilt #t-right { display: none; }
+  #t-gas { right: calc(18px + env(safe-area-inset-right)); bottom: calc(18px + env(safe-area-inset-bottom)); width: 92px; height: 150px; border-color: rgba(46, 204, 113, .7); }
+  #t-brake { right: calc(122px + env(safe-area-inset-right)); bottom: calc(18px + env(safe-area-inset-bottom)); width: 92px; height: 100px; border-color: rgba(255, 77, 77, .7); }
+  #t-boost { right: calc(122px + env(safe-area-inset-right)); bottom: calc(130px + env(safe-area-inset-bottom)); width: 92px; height: 38px; font-size: 12px; border-color: rgba(124, 243, 255, .7); border-radius: 12px; }
+  #t-top { position: absolute; top: calc(52px + env(safe-area-inset-top)); left: 50%; transform: translateX(-50%); display: flex; gap: 8px; }
+  #t-top .tb { position: static; height: 38px; padding: 0 12px; font-size: 12px; border-radius: 10px; }
+  #t-tilt.on { border-color: #ffd60a; background: rgba(255, 214, 10, .25); }
+  body.touch #hud-left { transform: scale(.62); transform-origin: top left; top: calc(8px + env(safe-area-inset-top)); left: calc(8px + env(safe-area-inset-left)); }
+  body.touch #hud-total { top: calc(8px + env(safe-area-inset-top)); font-size: 16px; padding: 6px 10px; }
+  body.touch #minimap { width: 120px; height: 120px; top: calc(8px + env(safe-area-inset-top)); right: calc(8px + env(safe-area-inset-right)); }
+  body.touch #dash { right: auto; left: 50%; bottom: calc(8px + env(safe-area-inset-bottom)); transform: translateX(-50%) scale(.55); transform-origin: bottom center; }
+  body.touch #lights { top: 100px; }
+  body.touch #toast { font-size: 26px; }
+  body.touch #offtrack { bottom: 120px; font-size: 16px; }
+  body.touch #menu { padding-top: 70px; }
+  body.touch #menu h1 { font-size: 30px; }
+  body.touch #splash h1 { font-size: 34px; text-align: center; }
+  #rotate { position: fixed; inset: 0; z-index: 60; background: #0d1117; flex-direction: column; align-items: center;
+    justify-content: center; gap: 16px; font-size: 20px; text-align: center; padding: 20px; }
+  #rotate div { font-size: 56px; }
+  @media (orientation: portrait) { body.touch.racing #rotate { display: flex; } }
 </style>
 </head>
 <body>
@@ -198,6 +242,19 @@
   </div>
   <div id="toast"></div>
   <div id="offtrack" class="hidden">OFF TRACK</div>
+  <div id="touch">
+    <div class="tb" id="t-left" data-k="left">◀</div>
+    <div class="tb" id="t-right" data-k="right">▶</div>
+    <div class="tb" id="t-brake" data-k="down">BRAKE</div>
+    <div class="tb" id="t-gas" data-k="up">GAS</div>
+    <div class="tb" id="t-boost" data-k="boost">OVERTAKE</div>
+    <div id="t-top">
+      <div class="tb" data-a="pause">❚❚</div>
+      <div class="tb" data-a="camera">CAMERA</div>
+      <div class="tb" id="t-tilt" data-a="tilt">TILT STEER</div>
+      <div class="tb" data-a="reset">REJOIN</div>
+    </div>
+  </div>
   <div id="help" class="panel">
     <kbd>←</kbd><kbd>→</kbd> steer &nbsp; <kbd>↑</kbd> gas &nbsp; <kbd>↓</kbd> brake / reverse &nbsp;
     <kbd>C</kbd> camera &nbsp; <kbd>M</kbd> auto/manual (<kbd>Q</kbd>/<kbd>E</kbd> shift) &nbsp;
@@ -208,8 +265,11 @@
 <!-- Title screen: shown only if the browser blocks sound until the player interacts -->
 <div id="splash" class="hidden">
   <h1>RACING <span>SIMULATOR</span></h1>
-  <div class="press">CLICK OR PRESS ANY KEY TO START</div>
+  <div class="press"><span class="key-only">CLICK OR PRESS ANY KEY TO START</span><span class="touch-only">TAP TO START</span></div>
 </div>
+
+<!-- Phones: ask to turn sideways during a race -->
+<div id="rotate"><div>⟳</div>Turn your phone sideways to race</div>
 
 <!-- Track selection -->
 <div id="menu" class="screen">
@@ -221,7 +281,12 @@
   <div class="seg racemusic-btns"><span class="lbl">RACE MUSIC</span><button data-race="on">On</button><button data-race="off">Off</button></div>
   <div id="track-grid"></div>
   <canvas id="dancer" width="40" height="58"></canvas>
-  <div class="controls-box">
+  <div class="controls-box touch-only">
+    On-screen controls: <b>◀ ▶</b> steer · <b>GAS</b> and <b>BRAKE</b> (hold brake when stopped to reverse) · <b>OVERTAKE</b> for extra power.<br>
+    Tap <b>TILT STEER</b> during a race to steer by tilting your phone like a steering wheel.<br>
+    To install: in Safari tap Share → <b>Add to Home Screen</b>; in Chrome tap ⋮ → <b>Add to Home screen</b> / <b>Install app</b>.
+  </div>
+  <div class="controls-box key-only">
     <kbd>↑</kbd> gas &nbsp; <kbd>↓</kbd> brake (hold when stopped to reverse) &nbsp; <kbd>←</kbd><kbd>→</kbd> steer<br>
     <kbd>C</kbd> change camera &nbsp; <kbd>M</kbd> automatic / manual gearbox (<kbd>Q</kbd> down, <kbd>E</kbd> up, no clutch) &nbsp;
     <kbd>Space</kbd> overtake mode (extra power, uses battery; in full-grid races only within 1 s of the car ahead)<br>
@@ -337,5 +402,9 @@
 <script src="js/peerjs.min.js"></script>
 <script src="js/net.js"></script>
 <script src="js/game.js"></script>
+<script>
+  // Installable app: save the game on the device so it opens offline (needs http/https, not file://).
+  if ('serviceWorker' in navigator && location.protocol.startsWith('http')) navigator.serviceWorker.register('sw.js');
+</script>
 </body>
 </html>
