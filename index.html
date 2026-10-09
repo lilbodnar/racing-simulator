@@ -176,8 +176,9 @@
   #help { position: absolute; left: 16px; bottom: 14px; font-size: 12px; color: #d0d7de; }
 
   /* ---------- Touch screens (phones, tablets) ---------- */
-  html, body { touch-action: manipulation; -webkit-tap-highlight-color: transparent; -webkit-touch-callout: none; }
-  #touch, #rotate, .touch-only { display: none; }
+  html, body { touch-action: manipulation; -webkit-tap-highlight-color: transparent; -webkit-touch-callout: none; -webkit-user-select: none; }
+  input, textarea { -webkit-user-select: text; user-select: text; }
+  #touch, .touch-only { display: none; }
   body.touch .touch-only { display: revert; }
   body.touch .key-only, body.touch #help { display: none; }
   body.touch #touch { display: block; }
@@ -186,10 +187,10 @@
     background: rgba(10, 14, 20, .45); border: 2px solid rgba(255, 255, 255, .28); border-radius: 18px;
     color: #fff; font-weight: 800; font-size: 15px; letter-spacing: 1px; }
   #touch .tb.on { background: rgba(255, 255, 255, .3); border-color: #fff; }
-  #t-left, #t-right { bottom: calc(18px + env(safe-area-inset-bottom)); width: 96px; height: 96px; font-size: 34px; }
-  #t-left { left: calc(18px + env(safe-area-inset-left)); }
-  #t-right { left: calc(126px + env(safe-area-inset-left)); }
-  body.tilt #t-left, body.tilt #t-right { display: none; }
+  #t-joy { left: calc(18px + env(safe-area-inset-left)); bottom: calc(18px + env(safe-area-inset-bottom)); width: 160px; height: 160px; border-radius: 50%; }
+  #t-joy.on { background: rgba(10, 14, 20, .45); }
+  #t-knob { width: 64px; height: 64px; border-radius: 50%; background: rgba(255, 255, 255, .3); border: 2px solid #fff; pointer-events: none; }
+  body.tilt #t-joy { display: none; }
   #t-gas { right: calc(18px + env(safe-area-inset-right)); bottom: calc(18px + env(safe-area-inset-bottom)); width: 92px; height: 150px; border-color: rgba(46, 204, 113, .7); }
   #t-brake { right: calc(122px + env(safe-area-inset-right)); bottom: calc(18px + env(safe-area-inset-bottom)); width: 92px; height: 100px; border-color: rgba(255, 77, 77, .7); }
   #t-boost { right: calc(122px + env(safe-area-inset-right)); bottom: calc(130px + env(safe-area-inset-bottom)); width: 92px; height: 38px; font-size: 12px; border-color: rgba(124, 243, 255, .7); border-radius: 12px; }
@@ -207,10 +208,6 @@
   body.touch #dancer { left: auto; right: calc(16px + env(safe-area-inset-right)); top: calc(4px + env(safe-area-inset-top)); }
   body.touch #menu h1 { font-size: 30px; }
   body.touch #splash h1 { font-size: 34px; text-align: center; }
-  #rotate { position: fixed; inset: 0; z-index: 60; background: #0d1117; flex-direction: column; align-items: center;
-    justify-content: center; gap: 16px; font-size: 20px; text-align: center; padding: 20px; }
-  #rotate div { font-size: 56px; }
-  @media (orientation: portrait) { body.touch.racing #rotate { display: flex; } }
 </style>
 </head>
 <body>
@@ -244,8 +241,7 @@
   <div id="toast"></div>
   <div id="offtrack" class="hidden">OFF TRACK</div>
   <div id="touch">
-    <div class="tb" id="t-left" data-k="left">◀</div>
-    <div class="tb" id="t-right" data-k="right">▶</div>
+    <div class="tb" id="t-joy"><div id="t-knob"></div></div>
     <div class="tb" id="t-brake" data-k="down">BRAKE</div>
     <div class="tb" id="t-gas" data-k="up">GAS</div>
     <div class="tb" id="t-boost" data-k="boost">OVERTAKE</div>
@@ -270,7 +266,6 @@
 </div>
 
 <!-- Phones: ask to turn sideways during a race -->
-<div id="rotate"><div>⟳</div>Turn your phone sideways to race</div>
 
 <!-- Track selection -->
 <div id="menu" class="screen">
@@ -283,7 +278,7 @@
   <div id="track-grid"></div>
   <canvas id="dancer" width="40" height="58"></canvas>
   <div class="controls-box touch-only">
-    On-screen controls: <b>◀ ▶</b> steer · <b>GAS</b> and <b>BRAKE</b> (hold brake when stopped to reverse) · <b>OVERTAKE</b> for extra power.<br>
+    On-screen controls: drag the <b>joystick</b> to steer · <b>GAS</b> and <b>BRAKE</b> (hold brake when stopped to reverse) · <b>OVERTAKE</b> for extra power.<br>
     Tap <b>TILT STEER</b> during a race to steer by tilting your phone like a steering wheel.<br>
     To install: in Safari tap Share → <b>Add to Home Screen</b>; in Chrome tap ⋮ → <b>Add to Home screen</b> / <b>Install app</b>.
   </div>
