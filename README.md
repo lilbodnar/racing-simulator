@@ -23,7 +23,7 @@ Steering wheels, pedals, H-shifters and game controllers are supported too.
 
 ## Phones and tablets
 
-Open the link on your phone and it shows on-screen controls: a joystick to steer, GAS, BRAKE and OVERTAKE, plus pause, camera and rejoin buttons. Tap **TILT STEER** during a race to steer by tilting the phone like a steering wheel.
+Open the link on your phone and it shows on-screen controls: tilt the phone like a steering wheel to steer, BRAKE on the left, GAS and OVERTAKE on the right, plus pause, camera and rejoin buttons.
 
 To install it as an app with its own home-screen icon, which opens full screen:
 

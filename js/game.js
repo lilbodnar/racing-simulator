@@ -626,9 +626,9 @@
     else if (audio && audio.ctx.state !== 'running') audio.ctx.resume().catch(() => {});   // iPhones pause audio on lock / calls
   });
 
-  // On-screen touch controls. Each finger is tracked on its own, so you can hold gas and steer
-  // together and slide a thumb from one button to the next.
-  const tk = {};                       // pressed touch buttons: up / down / left / right / boost
+  // On-screen touch controls: GAS, BRAKE and OVERTAKE, steering by tilting the phone. Each finger
+  // is tracked on its own, so you can hold two buttons together and slide a thumb between them.
+  const tk = {};                       // pressed touch buttons: up / down / boost
   const fingers = new Map();           // finger id -> data-k of the button under it
   function touchKeys() {
     for (const k of ['up', 'down', 'left', 'right', 'boost']) tk[k] = false;
@@ -640,31 +640,11 @@
     return el && el.closest && el.closest('#touch [data-k]') ? el.closest('[data-k]').dataset.k : null;
   }
   function fingerAt(e) { fingers.set(e.pointerId, buttonAt(e.clientX, e.clientY)); touchKeys(); }
-  // Steering joystick: drag the knob sideways; how far sets how hard you steer (left is +).
-  const joy = $('t-joy'), knob = $('t-knob'), JOY_R = 35;   // knob travel in px to full lock
-  let joyId = null, joySteer = 0;                            // touch identifier, or 'm' for a mouse
-  function joyMove(x, y) {
-    const r = joy.getBoundingClientRect(), ox = x - (r.left + r.width / 2), oy = y - (r.top + r.height / 2);
-    // Sideways on the game's screen, which is the phone's up/down when the page is turned
-    const dx = clamp((screenRot === 90 ? oy : screenRot === -90 ? -oy : ox) / JOY_R, -1, 1);
-    // Curved so small drags already turn hard: half way across gives about 60% lock
-    joySteer = Math.abs(dx) < 0.06 ? 0 : -Math.sign(dx) * Math.pow(Math.abs(dx), 0.7);
-    knob.style.transform = `translateX(${dx * JOY_R}px)`;
-    joy.classList.add('on');
-  }
-  function joyEnd() { joyId = null; joySteer = 0; knob.style.transform = ''; joy.classList.remove('on'); }
   // Fingers are rebuilt from the full list of touches on every touch event, rather than added on
   // down and removed on up: phones sometimes drop a finger's "up", which left a button stuck on.
   const syncTouches = e => {
-    if (e.type === 'touchstart' && joyId === null)
-      for (const t of e.changedTouches) if (t.target.closest && t.target.closest('#t-joy')) { joyId = t.identifier; break; }
     fingers.clear();
-    let joyHeld = false;
-    for (const t of e.touches) {
-      if (t.identifier === joyId) { joyHeld = true; joyMove(t.clientX, t.clientY); continue; }
-      fingers.set('t' + t.identifier, buttonAt(t.clientX, t.clientY));
-    }
-    if (!joyHeld && typeof joyId === 'number') joyEnd();
+    for (const t of e.touches) fingers.set('t' + t.identifier, buttonAt(t.clientX, t.clientY));
     touchKeys();
   };
   const touchPad = $('touch');
@@ -676,40 +656,27 @@
   for (const ev of ['touchstart', 'touchmove', 'touchend', 'touchcancel'])
     addEventListener(ev, e => {
       if (e.cancelable && e.target.closest && e.target.closest('#touch, #game')) e.preventDefault();
+      if (ev === 'touchend') askMotion();
       syncTouches(e);
     }, { passive: false });
   // Pointer events handle the action buttons, and finger tracking for a mouse (testing on a PC).
   touchPad.addEventListener('pointerdown', e => {
     e.preventDefault();
     const btn = e.target.closest('[data-a]');
-    if (btn) { if (btn.dataset.a !== 'tilt') touchAction(btn.dataset.a); return; }
+    if (btn) { wheelAction(btn.dataset.a); return; }
     if (e.pointerType === 'touch') return;
     touchPad.setPointerCapture(e.pointerId);
-    if (e.target.closest('#t-joy')) { joyId = 'm'; joyMove(e.clientX, e.clientY); return; }
     fingerAt(e);
   });
-  // Tilt goes on touchend: iPhones only let a page ask for motion access from a touchend or click.
-  touchPad.addEventListener('touchend', e => {
-    const btn = e.target.closest('[data-a]');
-    if (btn && btn.dataset.a === 'tilt') touchAction('tilt');
-  });
-  touchPad.addEventListener('pointermove', e => {
-    if (e.pointerType !== 'touch' && joyId === 'm') joyMove(e.clientX, e.clientY);
-    else if (fingers.has(e.pointerId)) fingerAt(e);
-  });
+  touchPad.addEventListener('pointermove', e => { if (fingers.has(e.pointerId)) fingerAt(e); });
   for (const ev of ['pointerup', 'pointercancel', 'lostpointercapture'])
-    touchPad.addEventListener(ev, e => {
-      if (e.pointerType !== 'touch' && joyId === 'm') joyEnd();
-      fingers.delete(e.pointerId); touchKeys();
-    });
-  addEventListener('blur', () => { fingers.clear(); joyEnd(); touchKeys(); });
-  function touchAction(a) {
-    if (a === 'tilt') toggleTilt();
-    else wheelAction(a);
-  }
+    touchPad.addEventListener(ev, e => { fingers.delete(e.pointerId); touchKeys(); });
+  addEventListener('blur', () => { fingers.clear(); touchKeys(); });
 
-  // Tilt steering: hold the phone sideways like a steering wheel. Full lock at about 20 degrees.
-  let tiltOn = false, tiltSteer = 0;
+  // Tilt steering, always on for phones: hold the phone sideways like a steering wheel. Full lock
+  // at about 20 degrees.
+  const tiltOn = isTouch;
+  let tiltSteer = 0;
   addEventListener('deviceorientation', e => {
     if (e.beta === null || e.gamma === null) return;
     const r = Math.PI / 180, b = e.beta * r, g = e.gamma * r;
@@ -719,16 +686,15 @@
     const roll = Math.asin(clamp(sideways, -1, 1)) / (20 * r);
     tiltSteer = Math.abs(roll) < 0.06 ? 0 : clamp(roll, -1, 1);
   });
-  async function toggleTilt() {
-    if (!tiltOn && window.DeviceOrientationEvent && DeviceOrientationEvent.requestPermission) {
-      try {   // iPhone / iPad ask for permission first
-        if (await DeviceOrientationEvent.requestPermission() !== 'granted') { toast('Motion access denied', 'red', 1.6); return; }
-      } catch (err) { toast('Tilt steering not available (' + (err && err.name || err) + ')', 'red', 2.5); return; }
-    }
-    tiltOn = !tiltOn;
-    document.body.classList.toggle('tilt', tiltOn);
-    $('t-tilt').classList.toggle('on', tiltOn);
-    toast(tiltOn ? 'Tilt steering' : 'Button steering', '', 1.2);
+  // iPhones need permission to read tilt, and only let a page ask from a tap (a touchend), so ask
+  // on the first one. If the tap didn't count, try again on the next.
+  let motionAsked = !(window.DeviceOrientationEvent && DeviceOrientationEvent.requestPermission);
+  function askMotion() {
+    if (motionAsked) return;
+    motionAsked = true;
+    DeviceOrientationEvent.requestPermission()
+      .then(r => { if (r !== 'granted') toast('Steering needs motion access: close this tab, reopen and tap Allow', 'red', 4); })
+      .catch(() => { motionAsked = false; });
   }
 
   // Phones: keep the screen awake and go full screen in landscape while racing.
@@ -784,7 +750,6 @@
     if (a === 'pause') togglePause();
     else if (a === 'camera') cycleCamera();
     else if (a === 'reset') resetCar();
-    else if (a === 'tilt') toggleTilt();
     else if ((a === 'shiftUp' || a === 'shiftDown') && inRace() && !paused) {
       manualShift();
       if (a === 'shiftUp') shiftUp(); else shiftDown();
@@ -803,15 +768,14 @@
     const thrIn = Math.max(keys.up || tk.up ? 1 : 0, W.throttle), brkIn = Math.max(keys.down || tk.down ? 1 : 0, W.brake);
     const up = controls && thrIn > 0.1, down = controls && brkIn > 0.1;
     const kSteer = (keys.left || tk.left ? 1 : 0) - (keys.right || tk.right ? 1 : 0);
-    const stick = !kSteer && joyId !== null;               // touch joystick: analog, like tilt
-    const wheelSteer = W.connected && !kSteer && !stick;
+    const wheelSteer = W.connected && !kSteer;
     const tilt = tiltOn && !kSteer && !W.connected;
-    const steerTarget = controls ? (wheelSteer ? W.steer : tilt ? tiltSteer : stick ? joySteer : kSteer) : 0;
+    const steerTarget = controls ? (wheelSteer ? W.steer : tilt ? tiltSteer : kSteer) : 0;
     const finishing = race.state === 'finished';
 
     car.throttle = approach(car.throttle, race.state === 'countdown' || controls ? thrIn : 0, dt * (W.connected ? 12 : 6));
     car.brake = approach(car.brake, finishing ? 0.35 : controls ? brkIn : 0, dt * (W.connected ? 14 : 8));
-    car.steerIn = approach(car.steerIn, steerTarget, dt * (wheelSteer || tilt || stick ? 15 : steerTarget ? 3.2 : 6));
+    car.steerIn = approach(car.steerIn, steerTarget, dt * (wheelSteer || tilt ? 15 : steerTarget ? 3.2 : 6));
 
     if (race.state === 'countdown') {    // rev the engine on the grid
       car.rpm = approach(car.rpm, IDLE_RPM + car.throttle * 7500, dt * 30000);

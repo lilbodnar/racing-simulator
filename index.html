@@ -187,17 +187,12 @@
     background: rgba(10, 14, 20, .45); border: 2px solid rgba(255, 255, 255, .28); border-radius: 18px;
     color: #fff; font-weight: 800; font-size: 15px; letter-spacing: 1px; }
   #touch .tb.on { background: rgba(255, 255, 255, .3); border-color: #fff; }
-  #t-joy { left: calc(18px + env(safe-area-inset-left)); bottom: calc(18px + env(safe-area-inset-bottom)); width: 160px; height: 160px; border-radius: 50%; }
-  #t-joy.on { background: rgba(10, 14, 20, .45); }
-  #t-knob { width: 64px; height: 64px; border-radius: 50%; background: rgba(255, 255, 255, .3); border: 2px solid #fff; pointer-events: none; }
-  body.tilt #t-joy { display: none; }
   #t-gas { right: calc(18px + env(safe-area-inset-right)); bottom: calc(18px + env(safe-area-inset-bottom)); width: 92px; height: 150px; border-color: rgba(46, 204, 113, .7); }
-  #t-brake { right: calc(122px + env(safe-area-inset-right)); bottom: calc(18px + env(safe-area-inset-bottom)); width: 92px; height: 100px; border-color: rgba(255, 77, 77, .7); }
-  #t-boost { right: calc(122px + env(safe-area-inset-right)); bottom: calc(130px + env(safe-area-inset-bottom)); width: 92px; height: 38px; font-size: 12px; border-color: rgba(124, 243, 255, .7); border-radius: 12px; }
+  #t-brake { left: calc(18px + env(safe-area-inset-left)); bottom: calc(18px + env(safe-area-inset-bottom)); width: 92px; height: 150px; border-color: rgba(255, 77, 77, .7); }
+  #t-boost { right: calc(18px + env(safe-area-inset-right)); bottom: calc(180px + env(safe-area-inset-bottom)); width: 92px; height: 38px; font-size: 12px; border-color: rgba(124, 243, 255, .7); border-radius: 12px; }
   #t-top { position: absolute; top: calc(52px + env(safe-area-inset-top)); left: 50%; transform: translateX(-50%); display: flex; gap: 8px; }
   #t-top .tb { position: static; height: 38px; padding: 0 12px; font-size: 12px; border-radius: 10px; }
-  #t-tilt.on { border-color: #ffd60a; background: rgba(255, 214, 10, .25); }
-  body.touch #hud-left { transform: scale(.62); transform-origin: top left; top: calc(8px + env(safe-area-inset-top)); left: calc(8px + env(safe-area-inset-left)); }
+  body.touch #hud-left { transform: scale(.62); transform-origin: top left; top: 8px; left: 8px; }
   body.touch #hud-total { top: calc(8px + env(safe-area-inset-top)); font-size: 16px; padding: 6px 10px; }
   body.touch #minimap { width: 120px; height: 120px; top: calc(8px + env(safe-area-inset-top)); right: calc(8px + env(safe-area-inset-right)); }
   body.touch #dash { right: auto; left: 50%; bottom: calc(8px + env(safe-area-inset-bottom)); transform: translateX(-50%) scale(.55); transform-origin: bottom center; }
@@ -241,14 +236,12 @@
   <div id="toast"></div>
   <div id="offtrack" class="hidden">OFF TRACK</div>
   <div id="touch">
-    <div class="tb" id="t-joy"><div id="t-knob"></div></div>
     <div class="tb" id="t-brake" data-k="down">BRAKE</div>
     <div class="tb" id="t-gas" data-k="up">GAS</div>
     <div class="tb" id="t-boost" data-k="boost">OVERTAKE</div>
     <div id="t-top">
       <div class="tb" data-a="pause">❚❚</div>
       <div class="tb" data-a="camera">CAMERA</div>
-      <div class="tb" id="t-tilt" data-a="tilt">TILT STEER</div>
       <div class="tb" data-a="reset">REJOIN</div>
     </div>
   </div>
@@ -278,8 +271,7 @@
   <div id="track-grid"></div>
   <canvas id="dancer" width="40" height="58"></canvas>
   <div class="controls-box touch-only">
-    On-screen controls: drag the <b>joystick</b> to steer · <b>GAS</b> and <b>BRAKE</b> (hold brake when stopped to reverse) · <b>OVERTAKE</b> for extra power.<br>
-    Tap <b>TILT STEER</b> during a race to steer by tilting your phone like a steering wheel.<br>
+    Tilt your phone like a steering wheel to steer · <b>BRAKE</b> on the left, <b>GAS</b> on the right (hold brake when stopped to reverse) · <b>OVERTAKE</b> for extra power.<br>
     To install: in Safari tap Share → <b>Add to Home Screen</b>; in Chrome tap ⋮ → <b>Add to Home screen</b> / <b>Install app</b>.
   </div>
   <div class="controls-box key-only">
