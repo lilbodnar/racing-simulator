@@ -18,7 +18,7 @@
     track:  { grip: [13, 0.0035], turn: [19, 0.0045], drag: [0, 0],     bump: 0,     shake: 0,    label: '' },
     kerb:   { grip: [12, 0.0032], turn: [17, 0.004],  drag: [0, 0],     bump: 0.012, shake: 0.03, label: '' },
     runoff: { grip: [11, 0.003],  turn: [16, 0.0038], drag: [0.2, 0],   bump: 0.004, shake: 0.01, label: 'OFF TRACK' },
-    grass:  { grip: [4.2, 0.0012], turn: [4.6, 0.0013], drag: [0.6, 0.025], bump: 0.025, shake: 0.06, label: 'GRASS' },
+    grass:  { grip: [4.2, 0.0012], turn: [6.5, 0.0018], drag: [0.6, 0.025], bump: 0.025, shake: 0.06, label: 'GRASS' },
     // Base drag must stay well under base grip, or a stopped car can never drive out.
     sand:   { grip: [3.6, 0.001],  turn: [4.0, 0.0011], drag: [1.4, 0.08],  bump: 0.03,  shake: 0.1,  label: 'SAND' },
     gravel: { grip: [3.2, 0.0008], turn: [3.5, 0.0009], drag: [1.2, 0.12],  bump: 0.04,  shake: 0.15, label: 'GRAVEL' },
