@@ -1017,10 +1017,16 @@
       o.connect(g); g.connect(audio.master); o.start(t); o.stop(t + 0.2);
     }
     if (!window.speechSynthesis) return;
-    speechSynthesis.cancel();   // a newer call replaces one still being read
     const u = new SpeechSynthesisUtterance(text);
-    u.rate = 1.1; u.pitch = 0.9;
-    setTimeout(() => speechSynthesis.speak(u), 250);
+    u.lang = 'en-US'; u.rate = 1.1; u.pitch = 0.9; u.volume = 1;
+    const voice = speechSynthesis.getVoices().find(v => v.lang === 'en-US') || speechSynthesis.getVoices().find(v => /^en/.test(v.lang));
+    if (voice) u.voice = voice;
+    // A newer call replaces one still being read. Safari drops a speak() straight after a cancel(),
+    // so only cancel when something is actually talking, and give it a moment before speaking.
+    if (speechSynthesis.speaking || speechSynthesis.pending) {
+      speechSynthesis.cancel();
+      setTimeout(() => speechSynthesis.speak(u), 150);
+    } else speechSynthesis.speak(u);
   }
   const finalTime = () => race.time + race.penalty;
 
@@ -2549,14 +2555,23 @@
   // Start the track-list music on load. Browsers usually block sound until the player clicks or
   // presses a key; if so, show a title screen that unlocks audio on the first gesture.
   const splash = $('splash');
-  let speechReady = false;
+  let speechReady = false, speechTrying = false;
   const unlock = e => {
     initAudio();
     splash.classList.add('gone');
     // iPhones only let a page talk if its first speech starts from a tap (finger lifting, not
-    // touching down): say nothing, quietly
+    // touching down), so say a word silently. Safari skips an empty one, so it has to be a real
+    // word at zero volume; it only counts once it has actually started, otherwise the next tap tries again.
     if (e.type === 'pointerdown' && e.pointerType !== 'mouse') return;
-    if (!speechReady && window.speechSynthesis) { speechReady = true; speechSynthesis.speak(new SpeechSynthesisUtterance('')); }
+    if (speechReady || speechTrying || !window.speechSynthesis) return;
+    speechTrying = true;
+    speechSynthesis.getVoices();   // some phones load their voices only once asked
+    const u = new SpeechSynthesisUtterance('ready');
+    u.volume = 0;
+    u.onstart = u.onend = () => { speechReady = true; speechTrying = false; };
+    u.onerror = () => { speechTrying = false; };
+    speechSynthesis.speak(u);
+    setTimeout(() => { speechTrying = false; }, 2000);   // never started: let the next tap try
   };
   addEventListener('pointerdown', unlock);
   addEventListener('pointerup', unlock);    // phones only allow sound to start when the finger lifts
