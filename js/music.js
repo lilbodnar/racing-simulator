@@ -747,7 +747,7 @@ const LobbyMusic = (() => {
   // A short, loud piano hit played over everything else (when Max Verstappen passes you): the first
   // four notes of the tab - low E string 5th fret (A) x3, then A string 7th fret (E), held. Played in
   // three octaves so it cuts through the engine, through a compressor so it doesn't clip.
-  const RIFF = [[0, 45, 0.18], [0.21, 45, 0.18], [0.42, 45, 0.18], [0.56, 52, 0.9]];   // [time s, midi, length s]
+  const RIFF = [[0, 45, 0.36], [0.42, 45, 0.36], [0.84, 45, 0.36], [1.12, 52, 0.9]];   // [time s, midi, length s]
   function riff(audioCtx, destination) {
     ctx = audioCtx;
     buffers();

@@ -46,6 +46,13 @@ function trackPose(T, s, d) {
   };
 }
 
+// How far from the centerline (on side +1 = left, -1 = right, at sample i) a car's centre can go
+// before its body meets the barrier. Without a barrier there, a little way onto the run-off.
+function dLimit(T, i, side) {
+  const wall = (side > 0 ? T.wallL : T.wallR)[i];
+  return Math.min(T.hw + 2, wall ? wall - 1.1 : Infinity);
+}
+
 // Grid slot k (0 = pole): two staggered columns 8 m apart, behind the start line.
 function gridSlot(T, k) {
   return { s: -8 - 8 * k, d: (k % 2 ? -1 : 1) * Math.min(2.8, T.hw - 1.2) };
@@ -160,7 +167,12 @@ function createField(T, player, difficulty, laps, scene, shadowTex) {
       // Sideways shove from a contact, scrubbed off by the tyres.
       ai.d += ai.latV * dt;
       ai.latV = Math.abs(ai.latV) < 7 * dt ? 0 : ai.latV - Math.sign(ai.latV) * 7 * dt;
-      ai.d = Math.max(-T.hw - 2, Math.min(T.hw + 2, ai.d));
+      // Barriers: a shove slides the car up to the wall, never through it (it bounces off a little).
+      const lo = -dLimit(T, p.i, -1), hi = dLimit(T, p.i, 1);
+      if (ai.d > hi || ai.d < lo) {
+        ai.d = Math.max(lo, Math.min(hi, ai.d));
+        if (Math.sign(ai.latV) === Math.sign(ai.d)) ai.latV *= -0.2;
+      }
       if (Math.abs(ai.d) > maxD && !ai.latV) ai.d -= Math.sign(ai.d) * Math.min(Math.abs(ai.d) - maxD, 2 * dt);
       // Rotation from a contact: a spin carries on until the car stops; small wobbles are caught.
       ai.yawOff += ai.yawVel * dt;

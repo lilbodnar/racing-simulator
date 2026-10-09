@@ -714,7 +714,9 @@
     const maxYaw = turnGrip / Math.max(Math.abs(nv), 1);
     // A wheel maps its whole rotation onto the steering, so it gets more lock (and keeps more of it
     // at speed) than the keys: wheel turned all the way = this much front-wheel angle.
-    let maxSteer = wheelSteer ? 0.7 / (1 + sp / 120) : 0.40 / (1 + sp / 60);
+    // Keys get enough lock for Monaco's hairpin (~7 m turning circle at 40-50 km/h); at speed the
+    // grip cap below decides, so this only matters in slow corners.
+    let maxSteer = wheelSteer ? 0.7 / (1 + sp / 120) : 0.6 / (1 + sp / 40);
     // Keys are all-or-nothing, so a held key would always ask for more lock than the tyres can use
     // and scrub off speed. Cap keyboard steering at the grip limit (a wheel/stick can still overdo it).
     if (!wheelSteer) maxSteer = Math.min(maxSteer, Math.atan(maxYaw * 1.05 * WHEELBASE / Math.max(Math.abs(nv), 1)));
@@ -1491,6 +1493,13 @@
       car.x += nX * pen / 2; car.z += nZ * pen / 2;
       ai.s -= (nX * tX + nZ * tZ) * pen / 2;
       ai.d -= (nX * mX + nZ * mZ) * pen / 2;
+      // A car against a barrier can't be pushed through it: we take the rest of the separation.
+      const lim = ai.d > 0 ? dLimit(T, p.i, 1) : -dLimit(T, p.i, -1);
+      const pinned = Math.abs(ai.d) >= Math.abs(lim) - 0.05;
+      if (Math.abs(ai.d) > Math.abs(lim)) {
+        const ex = ai.d - lim;
+        ai.d = lim; car.x -= mX * ex; car.z -= mZ * ex;
+      }
 
       // Impulse.
       const rpx = cx - car.x, rpz = cz - car.z, rax = cx - ai.x, raz = cz - ai.z;
@@ -1512,6 +1521,12 @@
       const nax = ax - ix / MASS, naz = az - iz / MASS;
       ai.v = Math.max(0, nax * tX + naz * tZ);
       ai.latV = nax * mX + naz * mZ;
+      if (pinned && Math.sign(ai.latV) === Math.sign(ai.d)) {
+        // The wall stops it, so the sideways push comes back on us instead.
+        const [px, pz] = playerVel();
+        setPlayerVel(px - mX * ai.latV, pz - mZ * ai.latV);
+        ai.latV = 0;
+      }
       ai.yawVel -= cross2(rax, raz, ix, iz) / CAR_I * (0.25 + 0.75 * hard);
       if (ai.s < playerS) ai.backoff = 1.5;                       // the car that hit us from behind lifts off
       if (Math.abs(ai.yawVel) > 2.2) ai.spinT = 2.5;              // hit hard enough to spin them round
