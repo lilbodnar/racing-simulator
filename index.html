@@ -73,8 +73,11 @@
   .music-btns .lbl { color: #9aa7b4; font-size: 13px; letter-spacing: 1px; margin-right: 4px; }
   .racemusic-btns { align-items: center; }
   .racemusic-btns .lbl { color: #9aa7b4; font-size: 13px; letter-spacing: 1px; margin-right: 4px; }
+  .rule-btns { align-items: center; }
+  .rule-btns .lbl { color: #9aa7b4; font-size: 13px; letter-spacing: 1px; margin-right: 4px; }
   #menu .music-btns { margin: -10px 0 8px; }
-  #menu .racemusic-btns { margin-bottom: 24px; }
+  #menu .racemusic-btns, #menu .limits-btns { margin-bottom: 8px; }
+  #menu .dirt-btns { margin-bottom: 24px; }
   #pause .music-btns { margin-top: 16px; }
   #weather-btns { flex-wrap: wrap; align-items: center; }
   #weather-btns .lbl { color: #9aa7b4; font-size: 13px; letter-spacing: 1px; margin-right: 4px; }
@@ -268,6 +271,8 @@
   <div class="mp-row"><button class="btn" id="btn-mp">Multiplayer · race your friends online</button></div>
   <div class="seg music-btns"><span class="lbl">MUSIC</span><button data-music="original">Original</button><button data-music="jazz">Jazz</button><button data-music="classical">Classical</button><button data-music="off">Off</button></div>
   <div class="seg racemusic-btns"><span class="lbl">RACE MUSIC</span><button data-race="on">On</button><button data-race="off">Off</button></div>
+  <div class="seg rule-btns limits-btns"><span class="lbl">TRACK LIMITS</span><button data-limits="on">On</button><button data-limits="off">Off</button></div>
+  <div class="seg rule-btns dirt-btns"><span class="lbl">DIRTY TYRES</span><button data-dirt="on">On</button><button data-dirt="off">Off</button></div>
   <div id="track-grid"></div>
   <canvas id="dancer" width="40" height="58"></canvas>
   <div class="controls-box touch-only">
@@ -361,6 +366,8 @@
     <button class="btn" id="btn-quit">Choose track</button>
     <div class="seg music-btns"><span class="lbl">MUSIC</span><button data-music="original">Original</button><button data-music="jazz">Jazz</button><button data-music="classical">Classical</button><button data-music="off">Off</button></div>
     <div class="seg racemusic-btns"><span class="lbl">RACE MUSIC</span><button data-race="on">On</button><button data-race="off">Off</button></div>
+    <div class="seg rule-btns limits-btns"><span class="lbl">TRACK LIMITS</span><button data-limits="on">On</button><button data-limits="off">Off</button></div>
+    <div class="seg rule-btns dirt-btns"><span class="lbl">DIRTY TYRES</span><button data-dirt="on">On</button><button data-dirt="off">Off</button></div>
   </div>
 </div>
 

@@ -788,7 +788,7 @@
     // Grip comes from the surface under the car; grass and gravel also leave the tyres dirty
     // for a while after you rejoin.
     const S = SURFACES[car.surface];
-    if (car.offTrack && car.surface !== 'runoff') car.dirt = Math.min(1, car.dirt + dt * 0.8 * Math.min(1, sp / 10));
+    if (dirtyTyres && car.offTrack && car.surface !== 'runoff') car.dirt = Math.min(1, car.dirt + dt * 0.8 * Math.min(1, sp / 10));
     else car.dirt = Math.max(0, car.dirt - dt * sp / 600);
     const dirty = car.offTrack ? 1 : 1 - 0.25 * car.dirt;
     // Rain, snow and hurricanes cut grip. Off the track traction keeps most of it, so a car stuck
@@ -991,15 +991,32 @@
   // One trip off counts once - you have to get a wheel back on the track before the next one counts.
   // Being pushed off by another car (contact in the last 2.5 s) is a justified reason, so it's free.
   function checkTrackLimits() {
+    if (!trackLimits) return;
     const out = Math.abs(car.lateral) - T.hw;
     if (race.wide) { if (out < HALF_W - 0.3) race.wide = false; return; }
     if (out <= HALF_W || T.lift[car.idx] > 0.4 || Math.abs(car.v) < 3) return;
     race.wide = true;
     if (race.time - race.hitAt < 2.5) return;      // knocked off by another car: not an offence
     const n = ++race.limits;
-    if (n < 3) toast('Track limits  ·  warning ' + n, '', 1.8);
-    else if (n === 3) toast('BLACK & WHITE FLAG\nTrack limits - next one is a penalty', 'bw', 2.6);
-    else { race.penalty += 5; toast('5 SECOND PENALTY\nTrack limits (total +' + race.penalty + 's)', 'red', 2.6); }
+    if (n < 3) raceControl('Track limits. Warning ' + n + '.');
+    else if (n === 3) raceControl('Black and white flag. Track limits. The next one is a penalty.');
+    else { race.penalty += 5; raceControl('Five second penalty for track limits. ' + race.penalty + ' seconds in total.'); }
+  }
+  // Race control talks to you over the radio instead of covering the screen: a two-tone beep,
+  // then the message in the device's own voice.
+  function raceControl(text) {
+    if (muted) return;
+    if (audio) {
+      const t = audio.ctx.currentTime, g = audio.ctx.createGain(), o = audio.ctx.createOscillator();
+      o.type = 'square'; o.frequency.setValueAtTime(1400, t); o.frequency.setValueAtTime(1050, t + 0.09);
+      g.gain.setValueAtTime(0.06, t); g.gain.setValueAtTime(0, t + 0.18);
+      o.connect(g); g.connect(audio.master); o.start(t); o.stop(t + 0.2);
+    }
+    if (!window.speechSynthesis) return;
+    speechSynthesis.cancel();   // a newer call replaces one still being read
+    const u = new SpeechSynthesisUtterance(text);
+    u.rate = 1.1; u.pitch = 0.9;
+    setTimeout(() => speechSynthesis.speak(u), 250);
   }
   const finalTime = () => race.time + race.penalty;
 
@@ -1619,6 +1636,30 @@
   document.querySelectorAll('.music-btns button').forEach(b => musicButton(b, () => { musicStyle = b.dataset.music; }));
   document.querySelectorAll('.racemusic-btns button').forEach(b => musicButton(b, () => { raceMusic = b.dataset.race === 'on'; }));
   syncMusicBtns();
+
+  // Race rules, on the menu and pause screens: track limits (warnings and penalties for going
+  // wide) and dirty tyres (less grip for a while after grass or gravel).
+  let trackLimits = true, dirtyTyres = true;
+  try {
+    trackLimits = localStorage.getItem('trackLimits') !== 'off';
+    dirtyTyres = localStorage.getItem('dirtyTyres') !== 'off';
+  } catch (e) {}
+  function syncRuleBtns() {
+    document.querySelectorAll('.limits-btns button').forEach(b => b.classList.toggle('sel', (b.dataset.limits === 'on') === trackLimits));
+    document.querySelectorAll('.dirt-btns button').forEach(b => b.classList.toggle('sel', (b.dataset.dirt === 'on') === dirtyTyres));
+  }
+  function ruleButton(b, apply) {
+    b.onclick = () => {
+      apply();
+      if (!dirtyTyres) car.dirt = 0;
+      try { localStorage.setItem('trackLimits', trackLimits ? 'on' : 'off'); localStorage.setItem('dirtyTyres', dirtyTyres ? 'on' : 'off'); } catch (e) {}
+      syncRuleBtns();
+      b.blur();   // so Space (overtake) doesn't re-press it later
+    };
+  }
+  document.querySelectorAll('.limits-btns button').forEach(b => ruleButton(b, () => { trackLimits = b.dataset.limits === 'on'; }));
+  document.querySelectorAll('.dirt-btns button').forEach(b => ruleButton(b, () => { dirtyTyres = b.dataset.dirt === 'on'; }));
+  syncRuleBtns();
 
   // All cars as { s, d, v } for traffic checks and positions. Once you've seen the results of an
   // online race your car is off the track, so the others drive through.
@@ -2513,7 +2554,15 @@
   // Start the track-list music on load. Browsers usually block sound until the player clicks or
   // presses a key; if so, show a title screen that unlocks audio on the first gesture.
   const splash = $('splash');
-  const unlock = () => { initAudio(); splash.classList.add('gone'); };
+  let speechReady = false;
+  const unlock = e => {
+    initAudio();
+    splash.classList.add('gone');
+    // iPhones only let a page talk if its first speech starts from a tap (finger lifting, not
+    // touching down): say nothing, quietly
+    if (e.type === 'pointerdown' && e.pointerType !== 'mouse') return;
+    if (!speechReady && window.speechSynthesis) { speechReady = true; speechSynthesis.speak(new SpeechSynthesisUtterance('')); }
+  };
   addEventListener('pointerdown', unlock);
   addEventListener('pointerup', unlock);    // phones only allow sound to start when the finger lifts
   addEventListener('touchend', unlock);

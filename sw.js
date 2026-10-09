@@ -23,7 +23,9 @@ self.addEventListener('fetch', e => {
   const url = new URL(e.request.url);
   if (e.request.method !== 'GET' || url.origin !== location.origin) return;   // multiplayer etc. go straight out
   e.respondWith(
-    fetch(e.request)
+    // no-cache: always check with the server. Otherwise the browser reuses its own copy for up to
+    // 10 minutes (GitHub Pages' max-age), so a new push didn't show up straight away.
+    fetch(e.request, { cache: 'no-cache' })
       .then(res => {
         if (res.ok) { const copy = res.clone(); caches.open(CACHE).then(c => c.put(e.request, copy)); }
         return res;
