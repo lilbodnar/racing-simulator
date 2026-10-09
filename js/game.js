@@ -1004,7 +1004,7 @@
     else if (n === 3) announce('Black and white flag. Track limits. The next one is a penalty.');
     else { race.penalty += 5; announce('Five second penalty for track limits. ' + race.penalty + ' seconds in total.'); }
   }
-  // A man's voice for race control. Voices don't say whether they're male, so pick one by name from
+  // A man's voice for the race controller. Voices don't say whether they're male, so pick one by name from
   // those built into iPhones / Macs, Windows, Chrome and Android (in order of preference); failing
   // that any English voice, with the pitch pulled down a little.
   const MALE_VOICES = ['Aaron', 'Daniel', 'Arthur', 'Alex', 'Gordon', 'Rishi', 'Tom',
@@ -1015,7 +1015,7 @@
     for (const name of MALE_VOICES) { const v = en.find(v => v.name.startsWith(name)); if (v) return v; }
     return en.find(v => /male/i.test(v.name) && !/female/i.test(v.name)) || en.find(v => v.lang === 'en-US') || en[0];
   }
-  // Race control talks to you over the radio instead of putting banners over the screen: a
+  // The race controller talks to you over the radio instead of putting banners over the screen: a
   // two-tone beep, then the message in the device's own voice, reworded to read aloud well.
   function announce(text) {
     if (!text || muted || !raceRadio) return;
@@ -1655,7 +1655,7 @@
   syncMusicBtns();
 
   // Race rules, on the menu and pause screens: track limits (warnings and penalties for going
-  // wide), dirty tyres (less grip for a while after grass or gravel) and the race control voice.
+  // wide), dirty tyres (less grip for a while after grass or gravel) and the race controller voice.
   let trackLimits = true, dirtyTyres = true, raceRadio = true;
   try {
     trackLimits = localStorage.getItem('trackLimits') !== 'off';

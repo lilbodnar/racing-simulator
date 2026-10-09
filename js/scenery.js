@@ -139,7 +139,35 @@ function buildScenery(ctx) {
     if (w.inside || w.poly) {
       const pts = [];
       if (w.poly) for (const [x, y] of w.poly) pts.push(T.fromMap(x, y));
-      else for (let i = 0; i < T.n; i += 8) pts.push([cx0 + (T.x[i] - cx0) * w.inside, cz0 + (T.z[i] - cz0) * w.inside]);
+      else {
+        // Lake inside the lap: centred on the infield point furthest from the track (the bounding
+        // box centre can sit right by a straight on a long thin lap), then rays cast out from it,
+        // each stopping well short of the road, scaled by `inside`.
+        const inLap = (x, z) => {
+          let r = false;
+          for (let i = 0, j = T.n - 1; i < T.n; j = i++) {
+            if ((T.z[i] > z) !== (T.z[j] > z) && x < (T.x[j] - T.x[i]) * (z - T.z[i]) / (T.z[j] - T.z[i]) + T.x[i]) r = !r;
+          }
+          return r;
+        };
+        let lx = cx0, lz = cz0, best = -1;
+        for (let gx = minX; gx <= maxX; gx += 25) for (let gz = minZ; gz <= maxZ; gz += 25) {
+          const d = idx.nearest(gx, gz, 600);
+          if (d > best && inLap(gx, gz)) { best = d; lx = gx; lz = gz; }
+        }
+        const clear = clearOf + 15, RAYS = 160, len = [];
+        for (let k = 0; k < RAYS; k++) {
+          const a = k / RAYS * Math.PI * 2, dx = Math.cos(a), dz = Math.sin(a);
+          let r = 0;
+          while (r < 4000 && idx.nearest(lx + dx * (r + 5), lz + dz * (r + 5), clear + 5) >= clear) r += 5;
+          len.push(r);
+        }
+        for (let k = 0; k < RAYS; k++) {   // no spikes: never longer than the neighbours allow
+          const r = Math.min(len[k], len[(k + 1) % RAYS] * 1.15, len[(k + RAYS - 1) % RAYS] * 1.15);
+          const a = k / RAYS * Math.PI * 2, s = Math.min(1, w.inside * 2);
+          pts.push([lx + Math.cos(a) * r * s, lz + Math.sin(a) * r * s]);
+        }
+      }
       const shape = new THREE.Shape(pts.map(p => new THREE.Vector2(p[0], -p[1])));
       const m = new THREE.Mesh(new THREE.ShapeGeometry(shape), mat);
       m.rotation.x = -Math.PI / 2; m.position.y = 0.04;
