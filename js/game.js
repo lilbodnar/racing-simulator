@@ -29,8 +29,38 @@
   const GRAVEL = 22;                 // gravel trap width past the track edge
   const SEASON_YEAR = 2026;
 
-  // In-memory records: { [trackId]: { bestLap, bestRace } } - gone when the page reloads.
-  const records = {};
+  // Records: { [trackId]: { bestLap, bestRace } }. Saved on this device; while signed in to an
+  // account, the account's records are used instead (and kept in a separate copy on the device for offline).
+  const DEVICE_RECORDS = 'racing-sim-records';
+  let recordsKey = DEVICE_RECORDS;
+  let records = loadRecords(recordsKey);
+  function cleanRecords(raw) {
+    const out = {};
+    const time = t => (typeof t === 'number' && isFinite(t) && t > 0) ? t : null;
+    for (const id in raw || {}) {
+      const r = raw[id] || {};
+      const bestLap = time(r.bestLap), bestRace = time(r.bestRace);
+      if (bestLap != null || bestRace != null) out[id] = { bestLap, bestRace };
+    }
+    return out;
+  }
+  function loadRecords(key) {
+    try { return cleanRecords(JSON.parse(localStorage.getItem(key))); } catch (e) { return {}; }
+  }
+  // Best of both: a record only ever gets faster.
+  function mergeRecords(a, b) {
+    const out = cleanRecords(a);
+    const min = (x, y) => x == null ? y : y == null ? x : Math.min(x, y);
+    for (const [id, r] of Object.entries(cleanRecords(b))) {
+      const o = out[id] || {};
+      out[id] = { bestLap: min(o.bestLap, r.bestLap), bestRace: min(o.bestRace, r.bestRace) };
+    }
+    return out;
+  }
+  function saveRecords() {
+    try { localStorage.setItem(recordsKey, JSON.stringify(records)); } catch (e) { /* storage blocked: keep for this session */ }
+    syncAccountRecords();
+  }
   // Last driver raced, remembered across visits (Lando Norris on a first visit).
   const LAST_DRIVER_KEY = 'racing-sim-last-driver';
   let lastDriverCode = 'NOR';
@@ -1054,13 +1084,14 @@
     if (fair && (rec.bestLap == null || lapTime < rec.bestLap)) {
       rec.bestLap = lapTime; race.newLapRec = true;
       note = 'Track record! ' + fmt(lapTime);
+      saveRecords();
     } else if (race.laps.length > 1 && lapTime <= Math.min(...race.laps)) {
       note = 'Fastest lap ' + fmt(lapTime);
     }
     if (race.laps.length >= RACE_LAPS) {
       race.state = 'finished';
       race.finishT = 0;
-      if (!race.tainted && (rec.bestRace == null || finalTime() < rec.bestRace)) { rec.bestRace = finalTime(); race.newRaceRec = true; }
+      if (!race.tainted && (rec.bestRace == null || finalTime() < rec.bestRace)) { rec.bestRace = finalTime(); race.newRaceRec = true; saveRecords(); }
       announce('FINISH!  ' + (field ? 'P' + playerPosition() + '  ' : '') + fmt(finalTime()) + (race.penalty ? '  (incl. +' + race.penalty + 's)' : ''));
     } else {
       // Announce the lap you're starting ("Lap 2"), then how the one you just did went
@@ -2424,6 +2455,91 @@
     mp.players.find(p => p.id === 'host').drv = code;
     mpLobbyChanged();
   }
+
+  // ---------- Accounts ----------
+  // Signed out: this device's records. Signed in: the account's records, saved to the account and
+  // copied on the device so they still show offline. A new account starts with this device's records.
+  const ACCOUNT_KEY = 'racing-sim-account';   // last signed-in { uid, name }, so offline starts show the right records
+  let account = null;
+  try { account = JSON.parse(localStorage.getItem(ACCOUNT_KEY)); } catch (e) {}
+  if (!Accounts.enabled || !account || !account.uid) account = null;
+  if (account) { recordsKey = DEVICE_RECORDS + ':' + account.uid; records = loadRecords(recordsKey); }
+
+  function refreshRecords() {
+    if (!$('menu').classList.contains('hidden')) buildMenu();
+    if (!$('prerace').classList.contains('hidden') && T) {
+      const rec = records[T.def.id] || {};
+      $('pr-lap').textContent = fmt(rec.bestLap);
+      $('pr-race').textContent = fmt(rec.bestRace);
+    }
+  }
+  function useAccount(u) {
+    account = u ? { uid: u.uid, name: u.name } : null;
+    try { account ? localStorage.setItem(ACCOUNT_KEY, JSON.stringify(account)) : localStorage.removeItem(ACCOUNT_KEY); } catch (e) {}
+    recordsKey = account ? DEVICE_RECORDS + ':' + account.uid : DEVICE_RECORDS;
+    records = loadRecords(recordsKey);
+    renderAccount();
+    refreshRecords();
+    syncAccountRecords();
+  }
+  let syncing = false, syncAgain = false;
+  function syncAccountRecords() {
+    const u = Accounts.user;
+    if (!u) return;
+    if (syncing) { syncAgain = true; return; }
+    syncing = true;
+    Accounts.syncRecords(records, mergeRecords)
+      .then(merged => {
+        if (!Accounts.user || Accounts.user.uid !== u.uid) return;   // signed out while it was saving
+        records = mergeRecords(merged, records);                     // keep anything set meanwhile
+        try { localStorage.setItem(recordsKey, JSON.stringify(records)); } catch (e) {}
+        refreshRecords();
+      })
+      .catch(() => { /* offline: it's on the device, and goes up with the next sync */ })
+      .finally(() => { syncing = false; if (syncAgain) { syncAgain = false; syncAccountRecords(); } });
+  }
+
+  function acctStatus(text, err) {
+    $('acct-status').textContent = text;
+    $('acct-status').classList.toggle('err', !!err);
+  }
+  function renderAccount() {
+    show('acct-row', Accounts.enabled);
+    $('btn-account').textContent = account ? 'Signed in as ' + account.name + ' · Account' : 'Sign in · keep your records on every device';
+    show('acct-out', !account); show('acct-in', !!account);
+    $('acct-who').textContent = account ? account.name : '';
+  }
+  function openAccount() {
+    acctStatus('');
+    renderAccount();
+    show('acct', true);
+    if (!account) $('acct-name').focus();
+  }
+  async function acctSubmit(create) {
+    const name = $('acct-name').value.trim(), pw = $('acct-pw').value;
+    if (!name || !pw) { acctStatus('Enter a username and password', true); return; }
+    acctStatus(create ? 'Creating your account…' : 'Signing in…');
+    try {
+      if (create) {
+        await Accounts.signUp(name, pw);
+        records = mergeRecords(records, loadRecords(DEVICE_RECORDS));   // bring this device's records along
+        saveRecords();
+        refreshRecords();
+      } else await Accounts.signIn(name, pw);
+      $('acct-pw').value = '';
+      acctStatus('');
+      show('acct', false);
+    } catch (e) { acctStatus(e.message, true); }
+  }
+  Accounts.onChange(useAccount);
+  $('btn-account').onclick = openAccount;
+  $('acct-back').onclick = () => show('acct', false);
+  $('acct-signin').onclick = () => acctSubmit(false);
+  $('acct-signup').onclick = () => acctSubmit(true);
+  $('acct-pw').addEventListener('keydown', e => { if (e.key === 'Enter') acctSubmit(false); });
+  $('acct-signout').onclick = () => { Accounts.signOut().finally(() => useAccount(null)); show('acct', false); };
+  renderAccount();
+  Accounts.init().catch(() => { /* offline or blocked: carry on with what's saved on the device */ });
 
   $('btn-mp').onclick = openMp;
   $('mp-back').onclick = () => show('mp', false);
