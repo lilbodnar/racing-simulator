@@ -104,5 +104,21 @@ const Net = (() => {
   };
   api.kick = id => { const c = conns.get(id); if (c) c.close(); };
   api.close = close;
+
+  // ----- Checking what other players send (anyone can send anything, by mistake or not) -----
+  // True if `a` is an array of exactly `n` ordinary numbers.
+  api.isNums = (a, n) => Array.isArray(a) && a.length === n && a.every(Number.isFinite);
+  // A guest's "I hit AI car i" message with every number present and kept within what a real hit
+  // can do, or null if anything is missing or isn't a number.
+  const BUMP = { ds: [-10, 10], dd: [-10, 10], v: [-20, 120], latV: [-40, 40], dy: [-20, 20], spinT: [0, 5], backoff: [0, 5] };
+  api.cleanBump = m => {
+    const out = {};
+    for (const [k, [lo, hi]] of Object.entries(BUMP)) {
+      if (!Number.isFinite(m[k])) return null;
+      out[k] = Math.min(hi, Math.max(lo, m[k]));
+    }
+    return out;
+  };
   return api;
 })();
+if (typeof module !== 'undefined') module.exports = Net;

@@ -59,6 +59,9 @@ const Accounts = (() => {
     if (/too-many-requests/.test(code)) return new Error('Too many tries. Wait a minute and try again');
     if (/network-request-failed/.test(code)) return new Error("Can't reach the account service. Check your connection.");
     if (/api-key|configuration-not-found|operation-not-allowed|unauthorized-domain/.test(code)) return new Error("Accounts aren't set up properly yet (see README)");
+    if (/permission-denied/.test(code)) return new Error("The database rules need updating (see README)");
+    if (/unavailable/.test(code)) return new Error("Can't reach the account service. Check your connection.");
+    if (/requires-recent-login/.test(code)) return new Error('Sign out and in again, then try that again');
     return e instanceof Error ? e : new Error('Something went wrong');
   }
 
@@ -96,8 +99,67 @@ const Accounts = (() => {
     });
   }
 
+  // Prove it's really you again (Firebase wants this before a password change or deleting an account).
+  async function reauth(password) {
+    if (!auth || !auth.currentUser) throw new Error('Sign in first');
+    try {
+      const cred = firebase.auth.EmailAuthProvider.credential(auth.currentUser.email, password);
+      await auth.currentUser.reauthenticateWithCredential(cred);
+    } catch (e) {
+      throw /invalid-credential|wrong-password/.test(e && e.code) ? new Error('Your current password is wrong') : friendly(e);
+    }
+  }
+
+  async function changePassword(current, next) {
+    await reauth(current);
+    try { await auth.currentUser.updatePassword(next); } catch (e) { throw friendly(e); }
+  }
+
+  // Delete the account, its records and its leaderboard times (on every circuit in `trackIds`).
+  async function deleteAccount(password, trackIds) {
+    await reauth(password);
+    const uid = auth.currentUser.uid, batch = db.batch(), was = user;
+    batch.delete(db.collection('users').doc(uid));
+    for (const id of trackIds) batch.delete(boardRef(id).doc(uid));
+    try {
+      await batch.commit();
+      user = null;                    // straight away, so no sync writes the records back meanwhile
+      await auth.currentUser.delete();
+    } catch (e) {
+      if (auth.currentUser) user = was;   // still signed in: carry on as before
+      throw friendly(e);
+    }
+    listeners.forEach(cb => cb(null));
+  }
+
+  // ----- Leaderboards: leaderboards/{trackId}/players/{uid} = { name, lap, race_2, race_5, race_10 } -----
+  // The game reports its own times, so a determined player could post a fake one. Fine among friends.
+  const boardRef = trackId => db.collection('leaderboards').doc(trackId).collection('players');
+
+  // Post your times. `entries` is { [trackId]: { lap, race_2, ... } } (only the fields that changed).
+  async function submitTimes(entries) {
+    if (!user) return;
+    const ids = Object.keys(entries);
+    if (!ids.length) return;
+    const batch = db.batch();         // one write per circuit, well under a batch's 500
+    for (const id of ids) batch.set(boardRef(id).doc(user.uid), { name: user.name, ...entries[id] }, { merge: true });
+    await batch.commit();
+  }
+
+  // The fastest `n` on a circuit for `field` ('lap', 'race_2', ...): [{ uid, name, time }].
+  // Anyone can look, signed in or not.
+  async function topTimes(trackId, field, n = 10) {
+    await init();
+    if (!db) throw new Error("Leaderboards aren't set up");
+    try {
+      const snap = await boardRef(trackId).orderBy(field).limit(n).get();
+      return snap.docs.map(d => ({ uid: d.id, name: String(d.data().name || '?'), time: d.data()[field] }))
+        .filter(r => typeof r.time === 'number' && isFinite(r.time));
+    } catch (e) { throw friendly(e); }
+  }
+
   return {
-    enabled, init, signIn, signUp, signOut, syncRecords,
+    enabled, init, signIn, signUp, signOut, syncRecords, changePassword, deleteAccount, submitTimes, topTimes,
     get user() { return user; },
     onChange(cb) { listeners.push(cb); },
   };

@@ -43,13 +43,23 @@ Race up to 22 people, one per car on the grid.
 
 Browsers connect directly to each other (WebRTC via PeerJS), so there's no game server. PeerJS's free public service only introduces the browsers to each other. The host's browser runs the AI cars and passes everyone's positions on, so the host should keep the tab open until the race ends. Pausing an online race only opens the menu; the race keeps going.
 
-## Records and accounts
+## Race length
 
-Your fastest lap and best race time on each circuit are saved on the device you play on.
+Pick 2, 5 or 10 laps on the pre-race screen (online, the host picks). Best race times are kept separately for each length; the fastest lap is one record per circuit.
+
+## Ghost car
+
+Your best lap on each circuit is replayed by a see-through car, so you can race yourself. Each clean lap that beats it becomes the new ghost (a lap where you used Rejoin doesn't count). Ghosts are saved on the device you play on. Turn it off with **Ghost car** on the menu or pause screen.
+
+## Records, accounts and leaderboards
+
+Your fastest lap and best race times on each circuit are saved on the device you play on.
 
 Sign in from the main menu, using a username and password, to keep your records in an account instead. While you're signed in, the account's records show and new ones are saved to it, so they follow you to any device or browser. Sign out and the device's own records come back. A new account starts with the records already on the device you create it on.
 
-There's no password reset, because accounts have no email address.
+Signed-in players' records are posted to each circuit's **Leaderboard** (on the pre-race and results screens), showing the top 10 for fastest lap and for each race length, under your username. Anyone can look. The game reports its own times, so someone could post a fake one: treat it as a friendly ranking.
+
+The account screen can change your password or delete the account, which also deletes its records and leaderboard times. There's no password reset, because accounts have no email address.
 
 ### Setting up accounts (one time)
 
@@ -58,7 +68,7 @@ Accounts use [Firebase](https://firebase.google.com/), which is free at this siz
 1. Go to the [Firebase console](https://console.firebase.google.com/), click **Create a project**, and give it a name. Google Analytics isn't needed.
 2. **Build → Authentication → Get started → Sign-in method**: turn on **Email/Password**.
 3. **Build → Firestore Database → Create database**: pick a location near you and start in **production mode**.
-4. In Firestore, open the **Rules** tab, replace the rules with these, and click **Publish**. They let each player read and write only their own records:
+4. In Firestore, open the **Rules** tab, replace the rules with these, and click **Publish**. They let each player read and write only their own records, and post only their own leaderboard times, under their own username:
 
    ```
    rules_version = '2';
@@ -67,9 +77,22 @@ Accounts use [Firebase](https://firebase.google.com/), which is free at this siz
        match /users/{uid} {
          allow read, write: if request.auth != null && request.auth.uid == uid;
        }
+       match /leaderboards/{track}/players/{uid} {
+         allow read: if true;
+         allow delete: if request.auth != null && request.auth.uid == uid;
+         allow create, update: if request.auth != null && request.auth.uid == uid
+           && request.resource.data.keys().hasOnly(['name', 'lap', 'race_2', 'race_5', 'race_10'])
+           && request.resource.data.name is string
+           && request.resource.data.name.lower() + '@players.racingsim.example' == request.auth.token.email
+           && okTime(request.resource.data, 'lap') && okTime(request.resource.data, 'race_2')
+           && okTime(request.resource.data, 'race_5') && okTime(request.resource.data, 'race_10');
+       }
+       function okTime(d, k) { return !(k in d) || (d[k] is number && d[k] > 10); }
      }
    }
    ```
+
+   **Already set up accounts before leaderboards were added?** Replace your rules with the ones above and publish again. Until you do, everything else keeps working but the leaderboards say the rules need updating.
 
 5. **Project settings** (gear icon) → **Your apps** → the web icon `</>`. Give it a nickname, then click **Register app**. Copy the `firebaseConfig` object it shows.
 6. In `js/firebase-config.js`, replace `null` with that object:
@@ -94,12 +117,31 @@ Signing in needs an internet connection and the published site (or a local web s
 - Grass, gravel and sand run-off, kerbs, dirty tyres
 - 2026-style track limits: black-and-white flag on the 3rd offence, 5 s penalty from the 4th
 - Car-to-car contact physics, overtake mode, lap and race records saved on the device or to an account
+- Races of 2, 5 or 10 laps, a ghost car of your best lap, and online leaderboards for each circuit
 - Weather: sunny, cloudy, rainy, snowy or hurricane (gale-force gusts, lightning strikes and flying debris)
 - Online multiplayer for up to 22 drivers, with AI filling the empty seats if you want
 
 ## Running locally
 
 No build step. Open `index.html` in a browser.
+
+## Tests
+
+With [Node.js](https://nodejs.org/) 18 or newer, run `node --test` in this folder. The tests cover the records, ghost recording and playback, the checks on multiplayer messages, and that `sw.js` lists every file the game needs offline. Nothing to install.
+
+## Code layout
+
+| File | What it does |
+|---|---|
+| `js/game.js` | The game: physics, race rules, camera, HUD, screens, multiplayer races, accounts UI |
+| `js/records.js` | Lap and race records: cleaning, merging, per race length |
+| `js/ghost.js` | Ghost car: recording, saving and replaying your best lap |
+| `js/accounts.js` | Firebase sign-in, account records, leaderboards |
+| `js/net.js` | Multiplayer connections (PeerJS) and checks on what other players send |
+| `js/ai.js` | AI drivers |
+| `js/car.js`, `js/scenery.js`, `js/tracks.js`, `js/weather.js` | Car model, circuit scenery, track layouts, weather |
+| `js/music.js`, `js/dancer.js`, `js/wheel.js` | Music, the menu's dancing driver, steering wheels and controllers |
+| `sw.js` | Offline copy of the game |
 
 ## Credits
 

@@ -2,7 +2,6 @@
   'use strict';
 
   // ---------- Settings ----------
-  const RACE_LAPS = 2;
   const SPACING = 2;                 // metres between centerline samples
   const MASS = 800;                  // kg
   const POWER = 750000;              // W
@@ -29,34 +28,19 @@
   const GRAVEL = 22;                 // gravel trap width past the track edge
   const SEASON_YEAR = 2026;
 
-  // Records: { [trackId]: { bestLap, bestRace } }. Saved on this device; while signed in to an
-  // account, the account's records are used instead (and kept in a separate copy on the device for offline).
+  // Records (see js/records.js): fastest lap per circuit, best race time per circuit and race length.
+  // Saved on this device; while signed in to an account, the account's records are used instead
+  // (and kept in a separate copy on the device for offline).
   const DEVICE_RECORDS = 'racing-sim-records';
   let recordsKey = DEVICE_RECORDS;
   let records = loadRecords(recordsKey);
-  function cleanRecords(raw) {
-    const out = {};
-    const time = t => (typeof t === 'number' && isFinite(t) && t > 0) ? t : null;
-    for (const id in raw || {}) {
-      const r = raw[id] || {};
-      const bestLap = time(r.bestLap), bestRace = time(r.bestRace);
-      if (bestLap != null || bestRace != null) out[id] = { bestLap, bestRace };
-    }
-    return out;
-  }
   function loadRecords(key) {
-    try { return cleanRecords(JSON.parse(localStorage.getItem(key))); } catch (e) { return {}; }
+    try { return Records.clean(JSON.parse(localStorage.getItem(key))); } catch (e) { return {}; }
   }
-  // Best of both: a record only ever gets faster.
-  function mergeRecords(a, b) {
-    const out = cleanRecords(a);
-    const min = (x, y) => x == null ? y : y == null ? x : Math.min(x, y);
-    for (const [id, r] of Object.entries(cleanRecords(b))) {
-      const o = out[id] || {};
-      out[id] = { bestLap: min(o.bestLap, r.bestLap), bestRace: min(o.bestRace, r.bestRace) };
-    }
-    return out;
-  }
+  // Race length for offline races (2, 5 or 10 laps), remembered between visits. Online, the host picks.
+  let raceLaps = 2;
+  try { const n = +localStorage.getItem('raceLaps'); if (Records.LENGTHS.includes(n)) raceLaps = n; } catch (e) {}
+  const validLaps = n => Records.LENGTHS.includes(+n) ? +n : 2;
   function saveRecords() {
     try { localStorage.setItem(recordsKey, JSON.stringify(records)); } catch (e) { /* storage blocked: keep for this session */ }
     syncAccountRecords();
@@ -78,7 +62,7 @@
     active: false, host: false,       // in an online session (lobby or race); hosting it
     name: '',                         // your name, remembered between visits
     players: [],                      // lobby: [{ id, name, drv }], the host is 'host'
-    settings: { track: TRACKS[0].id, weather: 'sunny', fill: true, difficulty: 'medium' },
+    settings: { track: TRACKS[0].id, weather: 'sunny', fill: true, difficulty: 'medium', laps: 2 },
     lobbyRacing: false,               // guest: a race was already running when the lobby last changed
     racing: false, started: false,    // an online race is on; its lights have gone out
     clock: 0,                         // seconds since lights out (the AI's clock)
@@ -787,7 +771,7 @@
   }
 
   // ---------- Race state ----------
-  const race = { state: 'menu', time: 0, lapStart: 0, laps: [], cp: 0, cdT: 0, goAt: 0, finishT: 0, newLapRec: false, newRaceRec: false };
+  const race = { state: 'menu', time: 0, lapStart: 0, laps: [], lapCount: 2, cp: 0, cdT: 0, goAt: 0, finishT: 0, newLapRec: false, newRaceRec: false };
   let paused = false;
   const inRace = () => ['countdown', 'racing', 'finished'].includes(race.state);
 
@@ -1077,27 +1061,54 @@
     const lapTime = race.time - race.lapStart;
     race.lapStart = race.time;
     race.laps.push(lapTime);
-    const rec = records[T.def.id] || (records[T.def.id] = { bestLap: null, bestRace: null });
+    const id = T.def.id;
     let note = 'Last lap ' + fmt(lapTime);
     const fair = !race.lapTainted;
     race.lapTainted = false;
-    if (fair && (rec.bestLap == null || lapTime < rec.bestLap)) {
-      rec.bestLap = lapTime; race.newLapRec = true;
+    // A clean lap faster than the saved ghost becomes the new ghost.
+    const lapLine = fair ? ghostRec.take(lapTime) : null;
+    ghostRec.reset();
+    if (lapLine && (!ghost || lapTime < ghost.time)) { ghost = lapLine; Ghost.save(id, lapLine); }
+    if (fair && Records.setLap(records, id, lapTime)) {
+      race.newLapRec = true;
       note = 'Track record! ' + fmt(lapTime);
       saveRecords();
     } else if (race.laps.length > 1 && lapTime <= Math.min(...race.laps)) {
       note = 'Fastest lap ' + fmt(lapTime);
     }
-    if (race.laps.length >= RACE_LAPS) {
+    if (race.laps.length >= race.lapCount) {
       race.state = 'finished';
       race.finishT = 0;
-      if (!race.tainted && (rec.bestRace == null || finalTime() < rec.bestRace)) { rec.bestRace = finalTime(); race.newRaceRec = true; saveRecords(); }
+      if (!race.tainted && Records.setRace(records, id, race.lapCount, finalTime())) { race.newRaceRec = true; saveRecords(); }
       announce('FINISH!  ' + (field ? 'P' + playerPosition() + '  ' : '') + fmt(finalTime()) + (race.penalty ? '  (incl. +' + race.penalty + 's)' : ''));
     } else {
       // Announce the lap you're starting ("Lap 2"), then how the one you just did went
       const next = race.laps.length + 1;
-      announce((next === RACE_LAPS ? 'Final lap' : 'Lap ' + next) + '\n' + note);
+      announce((next === race.lapCount ? 'Final lap' : 'Lap ' + next) + '\n' + note);
     }
+  }
+
+  // ---------- Ghost car (js/ghost.js) ----------
+  // Your best lap on this circuit, driven again by a see-through car each lap. Each lap is recorded
+  // as you drive it; see completeLap for when it replaces the saved one.
+  let ghostOn = true;
+  try { ghostOn = localStorage.getItem('ghost') !== 'off'; } catch (e) {}
+  const ghostRec = Ghost.recorder();
+  let ghost = null, ghostModel = null;   // the saved best lap for this circuit; its car (made when first needed)
+  function resetGhost() {
+    if (ghostModel) { scene.remove(ghostModel.group); Ghost.disposeModel(ghostModel); ghostModel = null; }
+    ghost = T ? Ghost.load(T.def.id) : null;
+    ghostRec.reset();
+  }
+  function updateGhost() {
+    const p = ghostOn && ghost && race.state === 'racing' ? Ghost.at(ghost, race.time - race.lapStart) : null;
+    // Hidden once its lap is over, and in the roof / cockpit cameras when it's right on top of you.
+    const show = p && !(camIdx > 0 && Math.hypot(p.x - car.x, p.z - car.z) < 5);
+    if (!show) { if (ghostModel) ghostModel.group.visible = false; return; }
+    if (!ghostModel) { ghostModel = Ghost.makeModel(selectedTeam, shadowTex, selectedDriver); scene.add(ghostModel.group); }
+    ghostModel.group.visible = true;
+    ghostModel.group.position.set(p.x, p.y, p.z);
+    ghostModel.group.rotation.set(-p.pitch, p.h, 0);
   }
 
   // ---------- Camera ----------
@@ -1527,15 +1538,14 @@
 
   // ---------- HUD ----------
   function updateHud(dt) {
-    const lapNo = Math.min(race.laps.length + 1, RACE_LAPS);
-    $('h-lap').textContent = lapNo + '/' + RACE_LAPS;
+    const lapNo = Math.min(race.laps.length + 1, race.lapCount);
+    $('h-lap').textContent = lapNo + '/' + race.lapCount;
     $('h-pos').textContent = field ? 'P' + playerPosition() + '/' + (field.cars.length + mp.remotes.size + 1) : 'SOLO';
     const running = race.state === 'racing';
     $('h-cur').textContent = fmt(running ? race.time - race.lapStart : 0);
     $('h-last').textContent = fmt(race.laps[race.laps.length - 1]);
     $('h-best').textContent = race.laps.length ? fmt(Math.min(...race.laps)) : '--';
-    const rec = records[T.def.id];
-    $('h-rec').textContent = fmt(rec && rec.bestLap);
+    $('h-rec').textContent = fmt(Records.bestLap(records, T.def.id));
     $('hud-total').textContent = fmt(race.time);
     const WX = WEATHERS[weather];
     $('h-weather').textContent = WX.wind ? 'WIND ' + Math.round(wfx.wind.speed * 3.6) + ' KM/H' : WX.label.toUpperCase();
@@ -1581,10 +1591,9 @@
       card.className = 'card' + (def === next ? ' next' : '');
       const cv = document.createElement('canvas');
       cv.width = 420; cv.height = 300;
-      const rec = records[def.id] || {};
       card.innerHTML = `<div class="round"><span>ROUND ${def.round}</span><span>${def.dates}</span></div>
         <h3></h3><div class="meta"></div>
-        <div class="rec mono">Fastest lap: <b>${fmt(rec.bestLap)}</b><br>Best race (${RACE_LAPS} laps): <b>${fmt(rec.bestRace)}</b></div>`;
+        <div class="rec mono">Fastest lap: <b>${fmt(Records.bestLap(records, def.id))}</b><br>Best race (${raceLaps} laps): <b>${fmt(Records.bestRace(records, def.id, raceLaps))}</b></div>`;
       card.querySelector('.round').after(cv);
       if (def === next) card.querySelector('.round').insertAdjacentHTML('beforeend', '<em>NEXT RACE</em>');
       else if (raceEndDate(def) < now) card.classList.add('done');
@@ -1639,6 +1648,26 @@
       box.appendChild(b);
     }
   }
+  // Pre-race panel: circuit details and your records for the chosen race length.
+  function showPreraceRecords() {
+    const def = T.def;
+    $('pr-meta').textContent = `Round ${def.round} · ${def.dates} · ${def.event ? def.event + ' · ' : ''}${def.country} · ${(def.lengthM / 1000).toFixed(3)} km`;
+    $('pr-lap').textContent = fmt(Records.bestLap(records, def.id));
+    $('pr-race').textContent = fmt(Records.bestRace(records, def.id, raceLaps));
+    $('pr-race-label').textContent = `Best race time (${raceLaps} laps)`;
+    const g = Ghost.load(def.id);
+    $('pr-ghost').textContent = g ? fmt(g.time) : 'none yet';
+    document.querySelectorAll('#laps-btns button').forEach(b => b.classList.toggle('sel', +b.dataset.laps === raceLaps));
+    show('pr-board', Accounts.enabled);
+  }
+  document.querySelectorAll('#laps-btns button').forEach(b => {
+    b.onclick = () => {
+      raceLaps = validLaps(b.dataset.laps);
+      try { localStorage.setItem('raceLaps', raceLaps); } catch (e) {}
+      showPreraceRecords();
+      b.blur();
+    };
+  });
   document.querySelectorAll('#mode-btns button').forEach(b => { b.onclick = () => { raceMode = b.dataset.mode; buildPicker(); }; });
   document.querySelectorAll('#diff-btns button').forEach(b => { b.onclick = () => { difficulty = b.dataset.diff; buildPicker(); }; });
   // Weather picker (pre-race screen): the scene behind the panel changes straight away.
@@ -1687,6 +1716,7 @@
 
   // Race rules, on the menu and pause screens: track limits (warnings and penalties for going
   // wide), dirty tyres (less grip for a while after grass or gravel) and the race controller voice.
+  // The ghost car switch sits with them.
   let trackLimits = true, dirtyTyres = true, raceRadio = true;
   try {
     trackLimits = localStorage.getItem('trackLimits') !== 'off';
@@ -1697,18 +1727,23 @@
     document.querySelectorAll('.limits-btns button').forEach(b => b.classList.toggle('sel', (b.dataset.limits === 'on') === trackLimits));
     document.querySelectorAll('.dirt-btns button').forEach(b => b.classList.toggle('sel', (b.dataset.dirt === 'on') === dirtyTyres));
     document.querySelectorAll('.radio-btns button').forEach(b => b.classList.toggle('sel', (b.dataset.radio === 'on') === raceRadio));
+    document.querySelectorAll('.ghost-btns button').forEach(b => b.classList.toggle('sel', (b.dataset.ghost === 'on') === ghostOn));
   }
   function ruleButton(b, apply) {
     b.onclick = () => {
       apply();
       if (!dirtyTyres) car.dirt = 0;
-      try { localStorage.setItem('trackLimits', trackLimits ? 'on' : 'off'); localStorage.setItem('dirtyTyres', dirtyTyres ? 'on' : 'off'); localStorage.setItem('raceRadio', raceRadio ? 'on' : 'off'); } catch (e) {}
+      try {
+        localStorage.setItem('trackLimits', trackLimits ? 'on' : 'off'); localStorage.setItem('dirtyTyres', dirtyTyres ? 'on' : 'off');
+        localStorage.setItem('raceRadio', raceRadio ? 'on' : 'off'); localStorage.setItem('ghost', ghostOn ? 'on' : 'off');
+      } catch (e) {}
       syncRuleBtns();
       b.blur();   // so Space (overtake) doesn't re-press it later
     };
   }
   document.querySelectorAll('.limits-btns button').forEach(b => ruleButton(b, () => { trackLimits = b.dataset.limits === 'on'; }));
   document.querySelectorAll('.dirt-btns button').forEach(b => ruleButton(b, () => { dirtyTyres = b.dataset.dirt === 'on'; }));
+  document.querySelectorAll('.ghost-btns button').forEach(b => ruleButton(b, () => { ghostOn = b.dataset.ghost === 'on'; }));
   document.querySelectorAll('.radio-btns button').forEach(b => ruleButton(b, () => {
     raceRadio = b.dataset.radio === 'on';
     if (!raceRadio && window.speechSynthesis) speechSynthesis.cancel();   // stop mid-sentence too
@@ -1955,12 +1990,8 @@
       buildTrackScene(def);
       placeCarAt(3);
       race.state = 'prerace';
-      const rec = records[def.id] || {};
       $('pr-name').textContent = def.name;
-      $('pr-meta').textContent = `Round ${def.round} · ${def.dates} · ${def.event ? def.event + ' · ' : ''}${def.country} · ${(def.lengthM / 1000).toFixed(3)} km · ${RACE_LAPS} laps`;
-      $('pr-lap').textContent = fmt(rec.bestLap);
-      $('pr-race').textContent = fmt(rec.bestRace);
-      $('pr-race-label').textContent = `Best race time (${RACE_LAPS} laps)`;
+      showPreraceRecords();
       buildPicker();
       show('menu', false); show('results', false); show('pause', false); show('hud', false);
       show('prerace', true);
@@ -1974,11 +2005,13 @@
     try { localStorage.setItem(LAST_DRIVER_KEY, lastDriverCode); } catch (e) { /* storage blocked: remember for this session only */ }
     if (document.activeElement) document.activeElement.blur();   // so Space doesn't re-press the button
     if (field) { field.dispose(); field = null; }
+    race.lapCount = mp.racing ? validLaps(mp.settings.laps) : raceLaps;
+    resetGhost();
     if (mp.racing || raceMode === 'grid') {
       // Online: every driver in the lobby is a person; the host's settings decide the AI.
       const set = mp.racing ? mp.settings : { difficulty, fill: true };
       const humans = mp.racing ? mp.lineup.map(p => DRIVERS.find(d => d.code === p.drv)) : [selectedDriver];
-      field = createField(T, humans, set.difficulty, RACE_LAPS, scene, shadowTex, WEATHERS[weather].grip, set.fill);
+      field = createField(T, humans, set.difficulty, race.lapCount, scene, shadowTex, WEATHERS[weather].grip, set.fill);
       const slot = field.slotOf(selectedDriver);
       const i = ((Math.round(slot.s / T.total * T.n) % T.n) + T.n) % T.n;
       placeCarAt(i);
@@ -2011,8 +2044,8 @@
     race.state = 'results';
     if (mp.racing) model.group.visible = false;   // off the track so the others drive through
     const fastest = Math.min(...race.laps);
-    const rec = records[T.def.id];
-    $('rs-meta').textContent = `${T.def.name} · ${selectedTeam.name} · ${RACE_LAPS} laps · ${WEATHERS[weather].label}${mp.racing ? ' · online' : ''}`;
+    const id = T.def.id;
+    $('rs-meta').textContent = `${T.def.name} · ${selectedTeam.name} · ${race.lapCount} laps · ${WEATHERS[weather].label}${mp.racing ? ' · online' : ''}`;
     let html = '<table class="laps mono">';
     race.laps.forEach((t, i) => {
       html += `<tr class="${t === fastest ? 'fast' : ''}"><td>Lap ${i + 1}</td><td>${fmt(t)}</td></tr>`;
@@ -2021,12 +2054,14 @@
     html += `<tr><td><b>Total</b></td><td><b>${fmt(finalTime())}</b></td></tr></table>`;
     html += `<div class="recs mono">
       <span>Fastest lap (this race)</span><span class="v">${fmt(fastest)}${race.newLapRec ? ' <span class="newrec">NEW RECORD</span>' : ''}</span>
-      <span>Track record lap</span><span class="v">${fmt(rec.bestLap)}</span>
-      <span>Best race time</span><span class="v">${fmt(rec.bestRace)}${race.newRaceRec ? ' <span class="newrec">NEW RECORD</span>' : ''}</span>
+      <span>Track record lap</span><span class="v">${fmt(Records.bestLap(records, id))}</span>
+      <span>Best race time (${race.lapCount} laps)</span><span class="v">${fmt(Records.bestRace(records, id, race.lapCount))}${race.newRaceRec ? ' <span class="newrec">NEW RECORD</span>' : ''}</span>
+      <span>Ghost lap</span><span class="v">${fmt(ghost && ghost.time)}</span>
     </div>`;
     resultsLaps = html;
     $('rs-body').innerHTML = field ? classification() + html : html;
     mpResultsButtons();
+    show('rs-board', Accounts.enabled);
     show('hud', false);
     show('results', true);
   }
@@ -2038,7 +2073,7 @@
   // Finishing order: finished cars by time, the rest estimated from their remaining distance.
   // Online, people still racing are marked as running.
   function classification() {
-    const goal = RACE_LAPS * T.total, now = mp.racing ? mp.clock : race.time;
+    const goal = race.lapCount * T.total, now = mp.racing ? mp.clock : race.time;
     const rows = [{ drv: selectedDriver, team: selectedTeam, t: finalTime(), me: true }];
     for (const o of rivals()) {
       const avg = Math.max(20, o.s / Math.max(now, 1));
@@ -2098,7 +2133,7 @@
   $('btn-quit').onclick = () => mp.racing ? mpLeave() : goToMenu();
   $('btn-again').onclick = () => mp.racing ? mpBackToLobby() : startRace();
   $('btn-tracks').onclick = () => mp.racing ? mpLeave() : goToMenu();
-  $('menu-sub').textContent = `${SEASON_YEAR} calendar · ${TRACKS.length} rounds · every race is ${RACE_LAPS} laps`;
+  $('menu-sub').textContent = `${SEASON_YEAR} calendar · ${TRACKS.length} rounds · races of ${Records.LENGTHS.join(', ').replace(/, (\d+)$/, ' or $1')} laps`;
 
   // ---------- Multiplayer ----------
   // Browser to browser through PeerJS (js/net.js). Every browser drives its own car and sends where
@@ -2117,6 +2152,7 @@
 
   // Your car: position, heading, speeds, steering, distance raced, finish time (-1 still racing),
   // gone (1 = finished and off the track).
+  const CAR_STATE_LEN = 14;
   function myState() {
     const gone = race.state === 'results';
     const fin = race.state === 'finished' || gone ? r2(finalTime()) : -1;
@@ -2335,8 +2371,9 @@
         if (p && DRIVERS.some(d => d.code === m.drv) && !takenBy(m.drv)) { p.drv = m.drv; mpLobbyChanged(); }
         break;
       case 'ready': mp.ready.add(from); mpCheckReady(); break;
+      // A guest's messages are checked before use: one bad number would otherwise wreck a car for everyone.
       case 'car': {
-        if (!mp.racing || !Array.isArray(m.c)) return;
+        if (!mp.racing || !Net.isNums(m.c, CAR_STATE_LEN)) return;
         const lat = mp.lats.get(from) || 0;
         mp.raw.set(from, { c: m.c, at: performance.now(), lat });
         const r = mp.remotes.get(from);
@@ -2345,14 +2382,16 @@
       }
       case 'pong': {
         const half = (performance.now() - m.k) / 2, old = mp.lats.get(from);
+        if (!(half >= 0 && half < 5000)) return;
         mp.lats.set(from, old == null ? half : old * 0.7 + half * 0.3);
         break;
       }
       case 'bump': {                    // a guest hit an AI car: apply what the hit did to it
-        const ai = mp.racing && field && field.cars[m.i];
-        if (!ai) return;
-        ai.s += m.ds; ai.d += m.dd; ai.v = m.v; ai.latV = m.latV; ai.yawVel += m.dy;
-        ai.spinT = Math.max(ai.spinT, m.spinT); ai.backoff = Math.max(ai.backoff, m.backoff);
+        const ai = mp.racing && field && Number.isInteger(m.i) && field.cars[m.i];
+        const b = ai && Net.cleanBump(m);
+        if (!b) return;
+        ai.s += b.ds; ai.d += b.dd; ai.v = b.v; ai.latV = b.latV; ai.yawVel += b.dy;
+        ai.spinT = Math.max(ai.spinT, b.spinT); ai.backoff = Math.max(ai.backoff, b.backoff);
         break;
       }
     }
@@ -2428,11 +2467,12 @@
       document.querySelectorAll('#mp-weather button').forEach(b => b.classList.toggle('sel', b.dataset.weather === S.weather));
       document.querySelectorAll('#mp-fill button').forEach(b => b.classList.toggle('sel', (b.dataset.fill === 'ai') === S.fill));
       document.querySelectorAll('#mp-diff button').forEach(b => b.classList.toggle('sel', b.dataset.diff === S.difficulty));
+      document.querySelectorAll('#mp-laps button').forEach(b => b.classList.toggle('sel', +b.dataset.laps === validLaps(S.laps)));
       show('mp-diff', S.fill);
       $('mp-start').textContent = `START RACE · ${n} ${n === 1 ? 'driver' : 'drivers'}${ai ? ' + ' + ai + ' AI' : ''}`;
     } else {
       const def = TRACKS.find(t => t.id === S.track) || TRACKS[0];
-      $('mp-settings-view').textContent = `${def.name} · ${WEATHERS[S.weather].label} · ${ai ? ai + ' AI cars (' + DIFFICULTY[S.difficulty].label.toLowerCase() + ')' : 'no AI'} · ${RACE_LAPS} laps`;
+      $('mp-settings-view').textContent = `${def.name} · ${WEATHERS[S.weather].label} · ${ai ? ai + ' AI cars (' + DIFFICULTY[S.difficulty].label.toLowerCase() + ')' : 'no AI'} · ${validLaps(S.laps)} laps`;
       $('mp-wait').textContent = mp.lobbyRacing ? 'A race is on right now. You\'ll be on the grid for the next one.' : 'Waiting for the host to start the race…';
     }
     $('mp-title').textContent = `DRIVERS ${n}/${Net.MAX_PLAYERS} · CLICK A FREE CAR TO TAKE IT`;
@@ -2467,11 +2507,7 @@
 
   function refreshRecords() {
     if (!$('menu').classList.contains('hidden')) buildMenu();
-    if (!$('prerace').classList.contains('hidden') && T) {
-      const rec = records[T.def.id] || {};
-      $('pr-lap').textContent = fmt(rec.bestLap);
-      $('pr-race').textContent = fmt(rec.bestRace);
-    }
+    if (!$('prerace').classList.contains('hidden') && T) showPreraceRecords();
   }
   function useAccount(u) {
     account = u ? { uid: u.uid, name: u.name } : null;
@@ -2488,16 +2524,71 @@
     if (!u) return;
     if (syncing) { syncAgain = true; return; }
     syncing = true;
-    Accounts.syncRecords(records, mergeRecords)
+    Accounts.syncRecords(records, Records.merge)
       .then(merged => {
         if (!Accounts.user || Accounts.user.uid !== u.uid) return;   // signed out while it was saving
-        records = mergeRecords(merged, records);                     // keep anything set meanwhile
+        records = Records.merge(merged, records);                    // keep anything set meanwhile
         try { localStorage.setItem(recordsKey, JSON.stringify(records)); } catch (e) {}
         refreshRecords();
+        postTimes(u.uid);
       })
       .catch(() => { /* offline: it's on the device, and goes up with the next sync */ })
       .finally(() => { syncing = false; if (syncAgain) { syncAgain = false; syncAccountRecords(); } });
   }
+
+  // ----- Leaderboards -----
+  // Your account's records go up to each circuit's leaderboard. What's already been posted is noted
+  // on the device, so only changed times are sent; a failed post (offline) is tried again next sync.
+  const POSTED_KEY = 'racing-sim-posted:';   // + uid
+  const BOARD_FIELDS = [['lap', 'Fastest lap'], ...Records.LENGTHS.map(n => ['race_' + n, n + ' laps'])];
+  function postTimes(uid) {
+    let posted = {};
+    try { posted = JSON.parse(localStorage.getItem(POSTED_KEY + uid)) || {}; } catch (e) {}
+    const todo = {};
+    for (const def of TRACKS) {
+      const want = { lap: Records.bestLap(records, def.id) };
+      for (const n of Records.LENGTHS) want['race_' + n] = Records.bestRace(records, def.id, n);
+      const had = posted[def.id] || {}, diff = {};
+      for (const k in want) if (want[k] != null && want[k] !== had[k]) diff[k] = want[k];
+      if (Object.keys(diff).length) todo[def.id] = diff;
+    }
+    Accounts.submitTimes(todo).then(() => {
+      for (const id in todo) posted[id] = { ...posted[id], ...todo[id] };
+      try { localStorage.setItem(POSTED_KEY + uid, JSON.stringify(posted)); } catch (e) {}
+    }).catch(() => { /* offline, or the database rules haven't been updated: next sync tries again */ });
+  }
+
+  let boardTrack = null, boardField = 'lap', boardAsk = 0;
+  function openBoard(def) {
+    boardTrack = def;
+    boardField = 'lap';
+    show('board', true);
+    loadBoard();
+  }
+  function loadBoard() {
+    const def = boardTrack, field = boardField, ask = ++boardAsk;
+    $('board-name').textContent = def.name;
+    document.querySelectorAll('#board-tabs button').forEach(b => b.classList.toggle('sel', b.dataset.f === field));
+    $('board-list').innerHTML = '';
+    $('board-status').textContent = 'Loading…';
+    $('board-status').classList.remove('err');
+    Accounts.topTimes(def.id, field, 10).then(rows => {
+      if (ask !== boardAsk) return;   // another tab was picked meanwhile
+      const me = account && account.uid;
+      $('board-status').textContent = rows.length ? '' : 'No times yet. Sign in and set one!';
+      $('board-list').innerHTML = rows.map((r, k) =>
+        `<tr class="${r.uid === me ? 'me' : ''}"><td>P${k + 1}</td><td>${escapeHtml(r.name)}${r.uid === me ? ' (you)' : ''}</td><td>${fmt(r.time)}</td></tr>`).join('');
+    }).catch(e => {
+      if (ask !== boardAsk) return;
+      $('board-status').textContent = e.message;
+      $('board-status').classList.add('err');
+    });
+  }
+  $('board-tabs').innerHTML = BOARD_FIELDS.map(([f, label]) => `<button data-f="${f}">${label}</button>`).join('');
+  document.querySelectorAll('#board-tabs button').forEach(b => { b.onclick = () => { boardField = b.dataset.f; loadBoard(); b.blur(); }; });
+  $('board-back').onclick = () => show('board', false);
+  $('pr-board').onclick = () => openBoard(T.def);
+  $('rs-board').onclick = () => openBoard(T.def);
 
   function acctStatus(text, err) {
     $('acct-status').textContent = text;
@@ -2522,7 +2613,7 @@
     try {
       if (create) {
         await Accounts.signUp(name, pw);
-        records = mergeRecords(records, loadRecords(DEVICE_RECORDS));   // bring this device's records along
+        records = Records.merge(records, loadRecords(DEVICE_RECORDS));   // bring this device's records along
         saveRecords();
         refreshRecords();
       } else await Accounts.signIn(name, pw);
@@ -2538,6 +2629,30 @@
   $('acct-signup').onclick = () => acctSubmit(true);
   $('acct-pw').addEventListener('keydown', e => { if (e.key === 'Enter') acctSubmit(false); });
   $('acct-signout').onclick = () => { Accounts.signOut().finally(() => useAccount(null)); show('acct', false); };
+  $('acct-chpw').onclick = async () => {
+    const cur = $('acct-cur').value, next = $('acct-new').value;
+    if (!cur || !next) { acctStatus('Enter your current password and a new one', true); return; }
+    acctStatus('Changing your password…');
+    try {
+      await Accounts.changePassword(cur, next);
+      $('acct-cur').value = $('acct-new').value = '';
+      acctStatus('Password changed');
+    } catch (e) { acctStatus(e.message, true); }
+  };
+  $('acct-delete').onclick = async () => {
+    const cur = $('acct-cur').value;
+    if (!cur) { acctStatus('Enter your current password to delete the account', true); $('acct-cur').focus(); return; }
+    if (!confirm(`Delete the account "${account.name}"? Its records and leaderboard times are deleted too, and this can't be undone. This device's own records stay.`)) return;
+    const uid = account.uid;
+    acctStatus('Deleting the account…');
+    try {
+      await Accounts.deleteAccount(cur, TRACKS.map(t => t.id));
+      try { [DEVICE_RECORDS + ':' + uid, POSTED_KEY + uid].forEach(k => localStorage.removeItem(k)); } catch (e) {}
+      $('acct-cur').value = $('acct-new').value = '';
+      acctStatus('');
+      show('acct', false);
+    } catch (e) { acctStatus(e.message, true); }
+  };
   renderAccount();
   Accounts.init().catch(() => { /* offline or blocked: carry on with what's saved on the device */ });
 
@@ -2550,7 +2665,7 @@
       await Net.host();
       const now = new Date();
       mp.active = true; mp.host = true;
-      mp.settings = { track: (TRACKS.find(d => raceEndDate(d) >= now) || TRACKS[0]).id, weather, fill: true, difficulty };
+      mp.settings = { track: (TRACKS.find(d => raceEndDate(d) >= now) || TRACKS[0]).id, weather, fill: true, difficulty, laps: raceLaps };
       mp.players = [{ id: 'host', name: mp.name, drv: selectedDriver.code }];
       mpStatus('');
       renderLobby();
@@ -2586,6 +2701,7 @@
   document.querySelectorAll('#mp-weather button').forEach(b => { b.onclick = () => { mp.settings.weather = b.dataset.weather; mpLobbyChanged(); }; });
   document.querySelectorAll('#mp-fill button').forEach(b => { b.onclick = () => { mp.settings.fill = b.dataset.fill === 'ai'; mpLobbyChanged(); }; });
   document.querySelectorAll('#mp-diff button').forEach(b => { b.onclick = () => { mp.settings.difficulty = b.dataset.diff; mpLobbyChanged(); }; });
+  document.querySelectorAll('#mp-laps button').forEach(b => { b.onclick = () => { mp.settings.laps = validLaps(b.dataset.laps); mpLobbyChanged(); }; });
   // An invite link (?join=CODE) opens the join screen with the code filled in.
   const invite = new URLSearchParams(location.search).get('join');
   if (invite) {
@@ -2603,8 +2719,13 @@
   // A hidden tab gets no animation frames. In an online race keep simulating (and sending) anyway,
   // on a timer, so your car - and, if you host, the AI - doesn't freeze for everyone else.
   setInterval(() => { if (document.hidden && mp.racing) tick(performance.now(), false); }, 50);
+  // Time since the last frame is run in steps of at most 0.05 s. Offline a long stall is cut to one
+  // step, so the race just slows for a moment. Online the race runs on the real clock with everyone
+  // else, so up to a second is caught up: a slow device (or a hidden tab, which browsers slow to one
+  // update a second) would otherwise fall behind, and if it's the host, drag the AI back for everyone.
+  const MAX_STEP = 0.05;
   function tick(now, render) {
-    const dt = Math.min(0.05, Math.max(0, now - last) / 1000);
+    const dt = Math.min(mp.racing ? 1 : MAX_STEP, Math.max(0, now - last) / 1000);
     last = now;
     Wheel.poll();
     for (const a of Wheel.takeActions()) wheelAction(a);
@@ -2629,64 +2750,73 @@
     // Pausing an online race only opens the menu: the race carries on (your car coasts).
     const frozen = paused && !mp.racing;
     if (!frozen) {
-      if (race.state === 'countdown' && !race.waiting) {
-        // Online the lights run on the real clock, so they go out together even on a slow computer.
-        race.cdT = mp.racing ? (now - mp.goT) / 1000 : race.cdT + dt;
-        setLights(race.cdT >= race.goAt ? 0 : Math.min(5, Math.floor(race.cdT)));
-        if (race.cdT >= race.goAt) {
-          race.state = 'racing';
-          mp.started = true;
-          show('lights', false);
-          announce('GO!');
-        }
-      }
-      // Fixed-step physics for stable handling.
-      const steps = Math.ceil(dt / (1 / 120));
-      for (let s = 0; s < steps; s++) {
-        const h = dt / steps;
-        const prevIdx = car.idx;
-        if (inRace()) physics(h);
-        if (race.state === 'racing') { race.time += h; updateLaps(prevIdx); checkTrackLimits(); }
-        if (inRace()) {
-          let dd = T.dist[car.idx] - T.dist[prevIdx];
-          if (dd > T.total / 2) dd -= T.total; else if (dd < -T.total / 2) dd += T.total;
-          playerS += dd;
-        }
-      }
-      if (mp.racing && mp.started) mp.clock += dt;
-      // Online the host's browser keeps driving the AI after its own race ends, for the others.
-      if (field && (inRace() || mp.racing)) {
-        if (ownsAI()) field.update(dt, mp.racing ? mp.started : race.state !== 'countdown', mp.racing ? mp.clock : race.time, racers());
-        else mpPredictAI(dt);
-        if (inRace()) { updateOvertakeWindow(dt); checkVerstappenPass(); }
-        field.sync(dt);
-        if (inRace()) carContacts();
-      }
-      if (mp.racing) {
-        mpUpdateRemotes(dt);
-        if (inRace()) remoteContacts();
-        mpSendState(dt);
-        if (race.state === 'results' && (mp.resultsT -= dt) <= 0) { mp.resultsT = 1; refreshClassification(); }
-      }
-      if (inRace()) hurricane(dt);
-      if (race.state === 'finished') {
-        race.finishT += dt;
-        if (race.finishT > 2.5) showResults();
-      }
-      if (inRace()) updateHud(dt);
-      scenery.update(dt);
+      let left = dt;
+      do { const step = Math.min(MAX_STEP, left); simulate(step, now); left -= step; } while (left > 1e-6);
     }
     if (!render) return;
-    if (!frozen && inRace()) surfaceEffects(dt);
+    const fx = Math.min(dt, MAX_STEP);   // effects and camera: one step's worth, even after a catch-up
+    if (!frozen && inRace()) surfaceEffects(fx);
     syncModel();
-    updateDebris(frozen ? 0 : dt);
-    updateDust(frozen ? 0 : dt);
+    updateGhost();
+    updateDebris(frozen ? 0 : fx);
+    updateDust(frozen ? 0 : fx);
     if (field && !inRace() && !mp.racing) field.sync(0);
-    updateCamera(dt);
-    wfx.update(frozen ? 0 : dt, camera.position, car, T.groundAt, !muted && !paused, lightningStrike);
+    updateCamera(fx);
+    wfx.update(frozen ? 0 : fx, camera.position, car, T.groundAt, !muted && !paused, lightningStrike);
     scenery.sky.position.copy(camera.position);
     updateAudio();
     renderer.render(scene, camera);
+  }
+
+  // One step (dt at most MAX_STEP) of the race: lights, physics, laps, AI, other players, weather.
+  function simulate(dt, now) {
+    if (race.state === 'countdown' && !race.waiting) {
+      // Online the lights run on the real clock, so they go out together even on a slow computer.
+      race.cdT = mp.racing ? (now - mp.goT) / 1000 : race.cdT + dt;
+      setLights(race.cdT >= race.goAt ? 0 : Math.min(5, Math.floor(race.cdT)));
+      if (race.cdT >= race.goAt) {
+        race.state = 'racing';
+        mp.started = true;
+        show('lights', false);
+        announce('GO!');
+      }
+    }
+    // Fixed-step physics for stable handling.
+    const steps = Math.ceil(dt / (1 / 120));
+    for (let s = 0; s < steps; s++) {
+      const h = dt / steps;
+      const prevIdx = car.idx;
+      if (inRace()) physics(h);
+      if (race.state === 'racing') { race.time += h; updateLaps(prevIdx); checkTrackLimits(); }
+      if (race.state === 'racing') ghostRec.add(race.time - race.lapStart, car.x, car.y, car.z, car.h, car.pitch);
+      if (inRace()) {
+        let dd = T.dist[car.idx] - T.dist[prevIdx];
+        if (dd > T.total / 2) dd -= T.total; else if (dd < -T.total / 2) dd += T.total;
+        playerS += dd;
+      }
+    }
+    if (mp.racing && mp.started) mp.clock += dt;
+    // Online the host's browser keeps driving the AI after its own race ends, for the others.
+    if (field && (inRace() || mp.racing)) {
+      if (ownsAI()) field.update(dt, mp.racing ? mp.started : race.state !== 'countdown', mp.racing ? mp.clock : race.time, racers());
+      else mpPredictAI(dt);
+      if (inRace()) { updateOvertakeWindow(dt); checkVerstappenPass(); }
+      field.sync(dt);
+      if (inRace()) carContacts();
+    }
+    if (mp.racing) {
+      mpUpdateRemotes(dt);
+      if (inRace()) remoteContacts();
+      mpSendState(dt);
+      if (race.state === 'results' && (mp.resultsT -= dt) <= 0) { mp.resultsT = 1; refreshClassification(); }
+    }
+    if (inRace()) hurricane(dt);
+    if (race.state === 'finished') {
+      race.finishT += dt;
+      if (race.finishT > 2.5) showResults();
+    }
+    if (inRace()) updateHud(dt);
+    scenery.update(dt);
   }
 
   // Start the track-list music on load. Browsers usually block sound until the player clicks or
