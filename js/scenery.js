@@ -102,7 +102,11 @@ function makeTrackIndex(T) {
 
 function buildScenery(ctx) {
   const { T, group, ribbon, canvasTex, speckle } = ctx;
-  const theme = THEMES[T.def.id] || { time: 'day', ground: 'grass' };
+  // ctx.time ('day' / 'dusk' / 'night') overrides the circuit's own time of day; a night race
+  // anywhere gets floodlights.
+  const own = THEMES[T.def.id] || { time: 'day', ground: 'grass' };
+  const time = ENVIRONMENTS[ctx.time] ? ctx.time : own.time;
+  const theme = { ...own, time, floodlights: own.floodlights || time === 'night' };
   const env = ENVIRONMENTS[theme.time];
   const night = theme.time === 'night', dusk = theme.time === 'dusk';
   const idx = T.index;
@@ -405,6 +409,21 @@ function buildScenery(ctx) {
     const sg = new THREE.BufferGeometry();
     sg.setAttribute('position', new THREE.Float32BufferAttribute(sp, 3));
     sky.add(new THREE.Points(sg, new THREE.PointsMaterial({ color: 0xffffff, size: 1.6, sizeAttenuation: false, fog: false })));
+  } else {
+    // The sun, where the light comes from: brighter than white, so with bloom on it glares.
+    const c = document.createElement('canvas'); c.width = c.height = 128;
+    const g = c.getContext('2d'), grd = g.createRadialGradient(64, 64, 0, 64, 64, 64);
+    grd.addColorStop(0, 'rgba(255,255,255,1)'); grd.addColorStop(0.12, 'rgba(255,255,255,1)');
+    grd.addColorStop(0.2, 'rgba(255,255,255,0.35)'); grd.addColorStop(1, 'rgba(255,255,255,0)');
+    g.fillStyle = grd; g.fillRect(0, 0, 128, 128);
+    const tex = new THREE.CanvasTexture(c);
+    const sunCol = dusk ? new THREE.Color(4, 2.3, 1.1) : new THREE.Color(4, 3.8, 3.3);
+    const sunDisc = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, color: sunCol, blending: THREE.AdditiveBlending, transparent: true, depthWrite: false, fog: false }));
+    const d = new THREE.Vector3(env.sun[2], env.sun[3], env.sun[4]).normalize();
+    sunDisc.position.copy(d).multiplyScalar(8000);
+    sunDisc.scale.setScalar(dusk ? 1500 : 1100);
+    sunDisc.userData.textures = [tex];
+    sky.add(sunDisc);
   }
 
   // ---------- Helpers ----------
@@ -412,6 +431,9 @@ function buildScenery(ctx) {
   const instanced = (geo, mat, list, colors) => {
     if (!list.length) return null;
     const m = new THREE.InstancedMesh(geo, mat, list.length);
+    // Three.js r128 checks an instanced mesh against the view using only the one base shape at the
+    // origin, so the whole set (every tree, say) vanished whenever the origin was off screen.
+    m.frustumCulled = false;
     list.forEach((t, i) => {
       dummy.position.set(t.x, t.y !== undefined ? t.y : groundAt(t.x, t.z) + (t.dy || 0), t.z);
       dummy.rotation.set(0, t.ry || 0, 0);
@@ -1148,7 +1170,7 @@ function buildScenery(ctx) {
       heads.push({ x: hx, z: hz, y: groundAt(x, z) + 22, ry: T.hd[i], sx: 1.2, sy: 1.6, sz: 5 });
     }
     instanced(boxGeo, steelMat, poles);
-    instanced(boxGeo, new THREE.MeshBasicMaterial({ color: 0xfff6dc }), heads);
+    instanced(boxGeo, new THREE.MeshBasicMaterial({ color: new THREE.Color(2.6, 2.5, 2.2) }), heads);   // glows with bloom on
   }
 
   // ---------- Landmarks ----------

@@ -154,6 +154,7 @@ function createField(T, humans, difficulty, laps, scene, shadowTex, weatherGrip 
       if (ai.passT > 0 && (sideL || sideR)) ai.passT = Math.max(ai.passT, 0.5);   // finish the pass before tucking back in
       const accel = Math.max(0.3, Math.min(13 + 0.0035 * ai.v * ai.v, 750000 / (800 * Math.max(ai.v, 4))) - 0.0011 * ai.v * ai.v);
       const brake = Math.min(40, 14 + 0.0045 * ai.v * ai.v);
+      ai.braking = ai.v > target + 1;                            // lights the rear light
       ai.v = ai.v < target ? Math.min(target, ai.v + accel * dt) : Math.max(Math.max(0, target), ai.v - (ai.spinT > 0 ? 10 : brake) * dt);
       ai.s += ai.v * dt;
 
@@ -191,6 +192,8 @@ function createField(T, humans, difficulty, laps, scene, shadowTex, weatherGrip 
   }
 
   function sync(dt) {
+    // Rain, snow and storms: rear lights flash (4 times a second) so cars behind can see them.
+    const flash = weatherGrip < 0.9 && performance.now() % 250 < 125;
     for (const ai of cars) {
       const p = trackPose(T, ai.s, ai.d);
       const g = ai.model.group;
@@ -199,7 +202,7 @@ function createField(T, humans, difficulty, laps, scene, shadowTex, weatherGrip 
       ai.spin += ai.v * dt / 0.36;
       ai.model.wheels.forEach(w => { w.rotation.x = ai.spin; });
       ai.model.frontPivots.forEach(pv => { pv.rotation.y = ai.steer; });
-      ai.model.brakeMat.color.setHex(0x440000);
+      ai.model.setRearLight(ai.braking ? 1 : flash ? 0.7 : 0);
       ai.x = p.x; ai.z = p.z; ai.h = g.rotation.y;
     }
   }

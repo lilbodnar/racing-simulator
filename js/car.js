@@ -536,11 +536,23 @@ function buildCarModel(team, shadowTex, drv) {
     }
   }
 
-  // Rain / brake light
+  // Rain / brake light, with a soft red glow round it when it's lit
   const brakeMat = new THREE.MeshBasicMaterial({ color: 0x440000 });
   const rain = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.07, 0.03), brakeMat);
   rain.position.set(0, 0.36, -2.5);
   root.add(rain);
+  const glow = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: rearGlowTexture(), color: 0xff2a1a, blending: THREE.AdditiveBlending, transparent: true, depthWrite: false, opacity: 0,
+  }));
+  glow.scale.set(0.9, 0.9, 1);
+  glow.position.set(0, 0.36, -2.56);
+  root.add(glow);
+  // level: 0 = off, 1 = full. Lit, the light is brighter than white so it glows with bloom on
+  // (without bloom the screen simply shows it as bright red).
+  const setRearLight = level => {
+    brakeMat.color.setRGB(0.27 + level * 4.5, level * 0.2, level * 0.15);
+    glow.material.opacity = level * 0.85;
+  };
 
   // Decals: number on the nose and on engine-cover panels, team name on sidepods and endplates
   const decal = (map, w, h) => new THREE.Mesh(new THREE.PlaneGeometry(w, h),
@@ -643,11 +655,25 @@ function buildCarModel(team, shadowTex, drv) {
   }
 
   root.add(mergeByMaterial(body));
+  root.traverse(o => { if (o.isMesh) o.castShadow = true; });   // real sun shadows (when graphics are on High)
+  // Soft dark patch right under the car: grounds it even where the sun's shadow falls to one side.
   const shadow = new THREE.Mesh(new THREE.PlaneGeometry(2.5, 6.2),
     new THREE.MeshBasicMaterial({ map: shadowTex, transparent: true, depthWrite: false }));
   shadow.rotation.x = -Math.PI / 2; shadow.position.y = 0.06;
   root.add(shadow);
   root.userData.textures = textures;
 
-  return { group: root, wheels, frontPivots, brakeMat, cockpitHide: [helmet, halo], shadow };
+  return { group: root, wheels, frontPivots, brakeMat, setRearLight, cockpitHide: [helmet, halo], shadow };
+}
+
+// Radial glow shared by every car's rear light.
+let rearGlowTex = null;
+function rearGlowTexture() {
+  if (rearGlowTex) return rearGlowTex;
+  const c = document.createElement('canvas'); c.width = c.height = 64;
+  const g = c.getContext('2d'), grd = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+  grd.addColorStop(0, 'rgba(255,255,255,1)'); grd.addColorStop(0.25, 'rgba(255,255,255,0.45)'); grd.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = grd; g.fillRect(0, 0, 64, 64);
+  rearGlowTex = new THREE.CanvasTexture(c);
+  return rearGlowTex;
 }

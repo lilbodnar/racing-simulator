@@ -63,6 +63,8 @@ const Ghost = (() => {
     const m = buildCarModel(team, shadowTex, drv);
     mat = mat || new THREE.MeshBasicMaterial({ color: 0x9fe6ff, transparent: true, opacity: 0.32, depthWrite: false });
     m.group.traverse(o => {
+      o.castShadow = false;
+      if (o.isSprite) { o.visible = false; return; }   // rear-light glow
       if (!o.material || o === m.shadow) return;
       [].concat(o.material).forEach(x => x.dispose());
       o.material = mat;
@@ -78,7 +80,7 @@ const Ghost = (() => {
   function disposeModel(m) {
     m.group.traverse(o => {
       if (o.geometry) o.geometry.dispose();
-      if (o === m.shadow) o.material.dispose();
+      if (o === m.shadow || o.isSprite) o.material.dispose();
     });
   }
 

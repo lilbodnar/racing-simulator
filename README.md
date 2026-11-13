@@ -119,6 +119,9 @@ Signing in needs an internet connection and the published site (or a local web s
 - Car-to-car contact physics, overtake mode, lap and race records saved on the device or to an account
 - Races of 2, 5 or 10 laps, a ghost car of your best lap, and online leaderboards for each circuit
 - Weather: sunny, cloudy, rainy, snowy or hurricane (gale-force gusts, lightning strikes and flying debris)
+- Time of day: each circuit's own (day, sunset or night), or pick day, sunset or night anywhere; night races get floodlights
+- Skid marks, tyre smoke, sparks off kerbs and barriers, flashing rain lights, spray from the cars ahead and a glossy track in the wet
+- **Graphics** setting on the pre-race screen: *High* adds sun shadows and a glow on bright lights (bloom) with softer highlights and darker screen corners; *Low* (the default on phones and tablets) leaves those out for a smoother frame rate
 - Online multiplayer for up to 22 drivers, with AI filling the empty seats if you want
 
 ## Running locally
@@ -140,6 +143,7 @@ With [Node.js](https://nodejs.org/) 18 or newer, run `node --test` in this folde
 | `js/net.js` | Multiplayer connections (PeerJS) and checks on what other players send |
 | `js/ai.js` | AI drivers |
 | `js/car.js`, `js/scenery.js`, `js/tracks.js`, `js/weather.js` | Car model, circuit scenery, track layouts, weather |
+| `js/fx.js` | Graphics effects: bloom and colour grade, skid marks, sparks, speed streaks |
 | `js/music.js`, `js/dancer.js`, `js/wheel.js` | Music, the menu's dancing driver, steering wheels and controllers |
 | `sw.js` | Offline copy of the game |
 

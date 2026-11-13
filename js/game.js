@@ -57,6 +57,15 @@
   let playerS = 0;                   // player's distance raced (same measure as the AI's s)
   let weather = 'sunny';             // key of WEATHERS, remembered between visits
   try { const w = localStorage.getItem('weather'); if (w in WEATHERS) weather = w; } catch (e) { /* storage blocked */ }
+  // Time of day: the circuit's own ('track') or day / dusk / night anywhere. Only changes how it
+  // looks, so online each player can pick their own.
+  let timeOfDay = 'track';
+  try { const t = localStorage.getItem('timeOfDay'); if (['track', 'day', 'dusk', 'night'].includes(t)) timeOfDay = t; } catch (e) {}
+  // Graphics: 'high' adds sun shadows and bloom / colour grading; 'low' (default on phones) skips
+  // both for a smoother frame rate.
+  const isTouch = matchMedia('(pointer: coarse)').matches;
+  let gfx = isTouch ? 'low' : 'high';
+  try { const g = localStorage.getItem('gfx'); if (g === 'high' || g === 'low') gfx = g; } catch (e) {}
   // Online play (see the Multiplayer section).
   const mp = {
     active: false, host: false,       // in an online session (lobby or race); hosting it
@@ -87,10 +96,14 @@
 
   // ---------- Renderer & scene ----------
   const renderer = new THREE.WebGLRenderer({ antialias: true });
-  const isTouch = matchMedia('(pointer: coarse)').matches;
+  renderer.shadowMap.enabled = true;              // used only while the sun casts shadows (High graphics, clear sky)
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  const post = createPost(renderer);              // bloom + colour grade (js/fx.js); High graphics only
+  const usePost = () => gfx === 'high' && post.supported;
   if (isTouch) document.body.classList.add('touch');
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, isTouch ? 1.5 : 2));   // phones: fewer pixels, smoother frame rate
   renderer.setSize(innerWidth, innerHeight);
+  post.setSize(Math.round(innerWidth * renderer.getPixelRatio()), Math.round(innerHeight * renderer.getPixelRatio()));
   $('game').appendChild(renderer.domElement);
 
   const scene = new THREE.Scene();
@@ -102,7 +115,34 @@
   const sun = new THREE.DirectionalLight(0xffffff, 0.7);
   sun.position.set(300, 600, 200);
   scene.add(sun);
+  // Sun shadows cover a square round the car (a bit ahead of it, where the camera looks), and the
+  // square moves with it. Its centre snaps to whole shadow-map texels, so edges don't shimmer.
+  const SHADOW_R = 70, SHADOW_MAP = 2048;
+  scene.add(sun.target);
+  sun.shadow.mapSize.set(SHADOW_MAP, SHADOW_MAP);
+  Object.assign(sun.shadow.camera, { left: -SHADOW_R, right: SHADOW_R, top: SHADOW_R, bottom: -SHADOW_R, near: 1, far: 1000 });
+  sun.shadow.camera.updateProjectionMatrix();
+  sun.shadow.bias = -0.0004;
+  sun.shadow.normalBias = 0.04;
+  const sunDir = new THREE.Vector3(0, 1, 0), sunRight = new THREE.Vector3(), sunUp = new THREE.Vector3(), sunC = new THREE.Vector3();
+  function aimSun(env) {
+    sunDir.set(env.sun[2], env.sun[3], env.sun[4]).normalize();
+    sunRight.crossVectors(sunDir, new THREE.Vector3(0, 1, 0));
+    if (sunRight.lengthSq() < 1e-6) sunRight.set(1, 0, 0);
+    sunRight.normalize();
+    sunUp.crossVectors(sunRight, sunDir).normalize();
+  }
+  function updateSun() {
+    if (!sun.castShadow) return;
+    const texel = 2 * SHADOW_R / SHADOW_MAP;
+    sunC.set(car.x + Math.sin(car.h) * 35, car.y, car.z + Math.cos(car.h) * 35);
+    const a = Math.round(sunC.dot(sunRight) / texel) * texel, b = Math.round(sunC.dot(sunUp) / texel) * texel, d = sunC.dot(sunDir);
+    sunC.copy(sunRight).multiplyScalar(a).addScaledVector(sunUp, b).addScaledVector(sunDir, d);
+    sun.target.position.copy(sunC);
+    sun.position.copy(sunC).addScaledVector(sunDir, 450);
+  }
   const wfx = createWeatherFx(scene);
+  const skids = createSkidMarks(scene), sparks = createSparks(scene), speedLines = createSpeedLines(scene);
 
   // iPhones won't let a page lock the screen sideways, so if the phone flips upright mid-race the
   // whole page is turned 90 degrees to stay sideways in your hands (the way it was last held).
@@ -120,6 +160,8 @@
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
     renderer.setSize(w, h);
+    const px = renderer.getPixelRatio();
+    post.setSize(Math.round(w * px), Math.round(h * px));
   }
   addEventListener('resize', fitScreen);
   addEventListener('orientationchange', () => setTimeout(fitScreen, 100));   // older iPhones report the new size late
@@ -390,7 +432,8 @@
     const add = (geo, mat) => trackGroup.add(new THREE.Mesh(geo, mat));
 
     // Asphalt (white edge lines are painted in the texture); double-sided so bridges have an underside.
-    T.roadMat = new THREE.MeshLambertMaterial({ map: roadTex, side: THREE.DoubleSide });
+    // A physically based material so a wet track can be glossy and reflect the sky (applyWeather).
+    T.roadMat = new THREE.MeshStandardMaterial({ map: roadTex, side: THREE.DoubleSide, roughness: 0.9, metalness: 0, envMapIntensity: 0 });
     add(ribbon(T.hw, -T.hw, 0.03, 16, null), T.roadMat);
 
     // Kerbs
@@ -472,9 +515,17 @@
     addGridBoxes();
 
     // Scenery and lighting for this circuit
-    scenery = buildScenery({ T, group: trackGroup, ribbon, canvasTex, speckle });
+    scenery = buildScenery({ T, group: trackGroup, ribbon, canvasTex, speckle, time: timeOfDay });
     trackGroup.add(scenery.sky);
+    // Shadows: everything can be shaded; anything standing up casts (flat ground strips don't).
+    trackGroup.traverse(o => {
+      if (!o.isMesh || o === scenery.sky) return;
+      o.receiveShadow = true;
+      o.castShadow = !scenery.groundMats.includes(o.material) && castsShadow(o);
+    });
+    skids.clear(); sparks.clear();
     const env = scenery.env;
+    aimSun(env);
     scene.background = new THREE.Color(env.horizon);
     scene.fog.color.setHex(env.fog[0]); scene.fog.near = env.fog[1]; scene.fog.far = env.fog[2];
     hemi.color.setHex(env.hemi[0]); hemi.groundColor.setHex(env.hemi[1]); hemi.intensity = env.hemi[2];
@@ -494,6 +545,9 @@
     const lum = (base.r + base.g + base.b) / 3;                 // keeps the grey dark on a night race
     const tint = W.tint === null ? base.clone() : new THREE.Color(W.tint).multiplyScalar(clamp(lum * 1.3, 0.15, 1));
     const fogCol = base.clone().lerp(tint, W.mix);
+    // Under a clear sky the haze takes on the horizon's colour, so far-off hills melt into the sky
+    // instead of ending at a visible line.
+    if (W.sky) fogCol.lerp(new THREE.Color(env.horizon), 0.6);
     const bg = W.sky ? new THREE.Color(env.horizon) : fogCol.clone();
     scene.background = bg.clone();
     scene.fog.color.copy(fogCol); scene.fog.near = env.fog[1] * W.fog; scene.fog.far = env.fog[2] * W.fog;
@@ -501,7 +555,11 @@
     hemi.intensity = env.hemi[2] * (0.4 + 0.6 * W.light);
     hemi.groundColor.setHex(W.snow ? 0xd8dde4 : env.hemi[1]);
     sun.intensity = env.sun[1] * W.light;
-    T.roadMat.color.setHex(W.wet ? 0x74747c : 0xffffff);
+    sun.castShadow = gfx === 'high' && W.sky;          // overcast light is too diffuse for crisp shadows
+    // Wet tarmac: darker, glossy, mirroring the sky and the lights.
+    T.roadMat.color.setHex(W.wet ? 0x606068 : 0xffffff);
+    T.roadMat.roughness = W.wet ? 0.2 : W.snow ? 0.75 : 0.9;
+    T.roadMat.envMapIntensity = W.wet ? 1.1 : 0;
     const snowCol = new THREE.Color(0xc9d0d9).multiplyScalar(W.snow ? clamp(lum * 1.1, 0.12, 0.9) : 0);
     T.roadMat.emissive.copy(snowCol).multiplyScalar(0.3);
     scenery.groundMats.forEach(m => { m.emissive.copy(snowCol); m.color.setScalar(W.snow ? 0.35 : 1); });
@@ -553,6 +611,7 @@
     gear: 1, rpm: IDLE_RPM, auto: true, shiftTimer: 0, revHold: 0, ers: 1, boost: false, otAvail: false, otHold: 0,
     idx: 0, lateral: 0, offTrack: false, onGravel: false, wheelSpin: 0, pitch: 0,
     vL: 0, yawVel: 0, yawKin: 0, surface: 'track', dirt: 0, bumpY: 0, bumpRoll: 0, bumpPitch: 0,   // sideways slide speed, impact spin rate, steering yaw rate
+    lock: 0, wspin: 0, scrub: 0,      // 0-1: tyres locking under braking, spinning under power, scrubbing in a corner (skid marks, smoke)
   };
 
   function placeCarAt(i) {
@@ -791,6 +850,7 @@
     car.brake = approach(car.brake, finishing ? 0.35 : controls ? brkIn : 0, dt * (W.connected ? 14 : 8));
     car.steerIn = approach(car.steerIn, steerTarget, dt * (wheelSteer || tilt ? 15 : steerTarget ? 3.2 : 6));
 
+    car.lock = car.wspin = car.scrub = 0;
     if (race.state === 'countdown') {    // rev the engine on the grid
       car.rpm = approach(car.rpm, IDLE_RPM + car.throttle * 7500, dt * 30000);
       return;
@@ -863,6 +923,11 @@
       const engineBrake = car.gear >= 1 && !car.neutral ? (1 - car.throttle) * Math.min(over, 1) * 6 : 0;
       car.ers = clamp(car.ers + (car.boost ? -OT_DRAIN : car.brake * OT_REGEN + (car.throttle < 0.1 ? 0.015 : 0)) * dt, 0, 1);
       const brakeA = car.brake * Math.min(grip * 1.1, 14 + 0.0045 * v * v);
+      // How far past their grip the tyres are pushed (for skid marks and smoke): the brakes asking
+      // for more than the grip (mostly in the wet), or the engine's push far beyond it (launches,
+      // slow-corner exits).
+      if (car.brake > 0.5 && sp > 8) car.lock = car.brake * clamp(((14 + 0.0045 * v * v) / (grip * 1.1) - 1) / 0.35, 0, 1);
+      if (engineA > 0) car.wspin = car.throttle * clamp((power * tf / (MASS * Math.max(sp, 4)) / grip - 2.5) / 3, 0, 1);
       const drag = 0.0011 * v * v + 0.25 + S.drag[0] + S.drag[1] * sp;
       nv = v < -0.3
         ? Math.min(0, v + (2 + grip * 0.5) * dt)                 // rolling backwards after a spin: tyres stop it
@@ -894,6 +959,7 @@
     let yawRate = nv * Math.tan(car.steerAngle) / WHEELBASE;
     if (Math.abs(yawRate) > maxYaw) {
       const excess = Math.abs(yawRate) - maxYaw;
+      car.scrub = clamp((excess / maxYaw - 0.15) * 1.5, 0, 1);
       yawRate = Math.sign(yawRate) * maxYaw;
       if (nv > 0) nv = Math.max(0, nv - Math.min(excess / maxYaw, 2) * 3 * dt);
     }
@@ -987,6 +1053,7 @@
     crashShake = Math.max(crashShake, Math.min(0.6, speed * 0.04));
     playCrash(Math.min(1, speed / 25));
     spawnDebris(x, y, z, Math.min(40, Math.floor(speed * 1.5)), nX, nZ, car.y);
+    if (speed > 4) sparks.spawn(x, y, z, nX * speed * 0.3, nZ * speed * 0.3, Math.min(40, Math.floor(speed * 1.2)), car.y, 4 + speed * 0.2);
   }
 
 
@@ -1156,7 +1223,13 @@
     model.group.rotation.set(-car.pitch + car.bumpPitch, car.h, car.bumpRoll);
     model.frontPivots.forEach(p => { p.rotation.y = car.steerAngle; });
     model.wheels.forEach(w => { w.rotation.x = car.wheelSpin; });
-    model.brakeMat.color.setHex(car.brake > 0.05 ? 0xff2020 : 0x440000);
+    // Rear light: on under braking; in rain, snow or a storm it flashes 4 times a second.
+    const flash = WEATHERS[weather].precip && performance.now() % 250 < 125;
+    model.setRearLight(car.brake > 0.05 ? 1 : flash ? 0.7 : 0);
+    // With real sun shadows the dark patch under each car only needs to be a faint contact shadow.
+    const blob = sun.castShadow ? 0.55 : 1;
+    model.shadow.material.opacity = blob;
+    if (field) for (const ai of field.cars) ai.model.shadow.material.opacity = blob;
   }
 
   // ---------- Minimap ----------
@@ -1252,7 +1325,7 @@
   }
 
   // Dust clouds (gravel, sand, grass): soft puffs that grow, drift up and fade.
-  const DUST = 160;
+  const DUST = 360;
   const dustMesh = new THREE.InstancedMesh(new THREE.IcosahedronGeometry(1, 3),
     new THREE.MeshLambertMaterial({ color: 0xffffff, transparent: true, opacity: 0.18, depthWrite: false }), DUST);
   dustMesh.frustumCulled = false;
@@ -1331,6 +1404,21 @@
           WX.snow ? POWDER : MIST, 1.4);
       }
     }
+    // The cars around you throw up spray too: in the rain you drive into a cloud behind the car ahead.
+    if ((WX.wet || WX.snow) && field) {
+      for (const ai of field.cars) {
+        const g = ai.model.group.position;
+        if (ai.v < 15 || Math.hypot(g.x - car.x, g.z - car.z) > 150) { ai.sprayAcc = 0; continue; }
+        ai.sprayAcc = (ai.sprayAcc || 0) + ai.v * 0.06 * dt;
+        const fx = Math.sin(ai.h), fz = Math.cos(ai.h);
+        while (ai.sprayAcc > 1) {
+          ai.sprayAcc -= 1;
+          spawnDust(g.x - fx * 2.6 + (Math.random() - 0.5) * 1.6, g.y + 0.5, g.z - fz * 2.6 + (Math.random() - 0.5) * 1.6,
+            -fx * ai.v * 0.25 + wfx.wind.x * 0.4, -fz * ai.v * 0.25 + wfx.wind.z * 0.4, WX.snow ? POWDER : MIST, 1.8);
+        }
+      }
+    }
+    tyreMarks(dt, sp, WX);
     // Rumble / crunch
     if (audio && audio.surf) {
       const t = audio.ctx.currentTime, on = !muted;
@@ -1338,6 +1426,38 @@
       const fq = { kerb: 180, grass: 450, gravel: 1400, sand: 900 }[car.surface] || 300;
       audio.surfGain.gain.setTargetAtTime(on ? vol * Math.min(1, sp / 30) : 0, t, 0.05);
       audio.surfFilter.frequency.setTargetAtTime(fq, t, 0.05);
+    }
+  }
+
+  // Skid marks and tyre smoke where the tyres are pushed past their grip, on tarmac only (off it
+  // they throw up dust instead). Locking shows on the fronts, wheelspin on the rears, a slide on all
+  // four. Sparks fly when the floor bottoms out on a kerb at speed.
+  const WHEELS = [[0.8, 1.75, 'fl'], [-0.8, 1.75, 'fr'], [0.77, -1.65, 'rl'], [-0.77, -1.65, 'rr']];
+  const SMOKE = new THREE.Color(0xe4e4e4);
+  let smokeAcc = 0;
+  function tyreMarks(dt, sp, WX) {
+    const tarmac = ['track', 'kerb', 'runoff'].includes(car.surface) && car.y - (T.y[car.idx] || 0) < 0.6;
+    const slide = clamp((Math.abs(car.vL) - 1.5) / 4, 0, 1);
+    const front = Math.max(car.lock, car.scrub * 0.8, slide), rear = Math.max(car.wspin, slide, car.lock * 0.5);
+    const fx = Math.sin(car.h), fz = Math.cos(car.h);           // forward; sideways (left) is (fz, -fx)
+    const wetFade = WX.wet ? 0.35 : 1;                            // water washes most of the rubber off
+    for (const [lat, fwd, key] of WHEELS) {
+      const amt = tarmac && sp > 1.5 ? (fwd > 0 ? front : rear) : 0;
+      const x = car.x + fx * fwd + fz * lat, z = car.z + fz * fwd - fx * lat;
+      skids.mark(key, x, car.y + 0.04, z, fz, -fx, fwd > 0 ? 0.3 : 0.38, amt > 0.15 ? (0.2 + 0.55 * amt) * wetFade : 0);
+    }
+    const smoke = Math.max(front, rear);
+    if (tarmac && !WX.wet && !WX.snow && smoke > 0.35 && sp > 2) {
+      smokeAcc += smoke * 30 * dt;
+      while (smokeAcc > 1) {
+        smokeAcc -= 1;
+        const [lat, fwd] = WHEELS[rear >= front ? 2 + (Math.random() < 0.5 ? 0 : 1) : Math.random() < 0.5 ? 0 : 1];
+        spawnDust(car.x + fx * fwd + fz * lat, car.y + 0.3, car.z + fz * fwd - fx * lat,
+          -fx * sp * 0.15 + (Math.random() - 0.5) * 2, -fz * sp * 0.15 + (Math.random() - 0.5) * 2, SMOKE, 1.1);
+      }
+    } else smokeAcc = 0;
+    if (car.surface === 'kerb' && sp > 50 && Math.random() < dt * 4) {
+      sparks.spawn(car.x - fx * 0.5, car.y + 0.05, car.z - fz * 0.5, -fx * sp * 0.4, -fz * sp * 0.4, 8, car.y, 3);
     }
   }
 
@@ -1684,6 +1804,38 @@
     };
   });
   syncWeatherBtns();
+
+  // Time of day (rebuilds the circuit's scenery and lights) and graphics quality, both remembered.
+  function syncLookBtns() {
+    document.querySelectorAll('#time-btns button').forEach(b => b.classList.toggle('sel', b.dataset.time === timeOfDay));
+    document.querySelectorAll('#gfx-btns button').forEach(b => b.classList.toggle('sel', b.dataset.gfx === gfx));
+  }
+  document.querySelectorAll('#time-btns button').forEach(b => {
+    b.onclick = () => {
+      b.blur();
+      if (b.dataset.time === timeOfDay) return;
+      timeOfDay = b.dataset.time;
+      try { localStorage.setItem('timeOfDay', timeOfDay); } catch (e) {}
+      syncLookBtns();
+      if (!T || race.state !== 'prerace') return;
+      $('loading').classList.remove('hidden');
+      setTimeout(() => {          // let the loading message paint before the rebuild
+        buildTrackScene(T.def);
+        placeCarAt(3);
+        $('loading').classList.add('hidden');
+      }, 30);
+    };
+  });
+  document.querySelectorAll('#gfx-btns button').forEach(b => {
+    b.onclick = () => {
+      gfx = b.dataset.gfx;
+      try { localStorage.setItem('gfx', gfx); } catch (e) {}
+      applyWeather();             // turns the sun's shadows on or off
+      syncLookBtns();
+      b.blur();
+    };
+  });
+  syncLookBtns();
 
   // Music style and race-music switch (track list and pause screen), remembered between visits.
   // Each style: [track list song, driver lobby song (pre-race/pause/results), in-race song].
@@ -2190,7 +2342,7 @@
       r.spin += r.v * dt / 0.36;
       r.model.wheels.forEach(wh => { wh.rotation.x = r.spin; });
       r.model.frontPivots.forEach(pv => { pv.rotation.y = r.steer; });
-      r.model.brakeMat.color.setHex(r.brake ? 0xff2020 : 0x440000);
+      r.model.setRearLight(r.brake ? 1 : 0);
     }
   }
   // Each person's car starts on its grid slot.
@@ -2764,8 +2916,13 @@
     updateCamera(fx);
     wfx.update(frozen ? 0 : fx, camera.position, car, T.groundAt, !muted && !paused, lightningStrike);
     scenery.sky.position.copy(camera.position);
+    skids.flush();
+    sparks.update(frozen ? 0 : fx);
+    speedLines.update(frozen ? 0 : fx, camera, inRace() ? Math.abs(car.v) : 0);
+    updateSun();
     updateAudio();
-    renderer.render(scene, camera);
+    if (usePost()) post.render(scene, camera);
+    else renderer.render(scene, camera);
   }
 
   // One step (dt at most MAX_STEP) of the race: lights, physics, laps, AI, other players, weather.

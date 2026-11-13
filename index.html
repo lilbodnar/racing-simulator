@@ -80,8 +80,8 @@
   #menu .radio-btns { margin-bottom: 8px; }
   #menu .ghost-btns { margin-bottom: 24px; }
   #pause .music-btns { margin-top: 16px; }
-  #weather-btns, #laps-btns { flex-wrap: wrap; align-items: center; }
-  #weather-btns .lbl, #laps-btns .lbl { color: #9aa7b4; font-size: 13px; letter-spacing: 1px; margin-right: 4px; }
+  #weather-btns, #laps-btns, #time-btns, #gfx-btns { flex-wrap: wrap; align-items: center; }
+  #weather-btns .lbl, #laps-btns .lbl, #time-btns .lbl, #gfx-btns .lbl { color: #9aa7b4; font-size: 13px; letter-spacing: 1px; margin-right: 4px; }
   #weather-btns button.storm { border-color: #7a1f1f; }
   #weather-btns button.storm.sel { border-color: #ff4d4d; background: #3a1a1a; }
   #h-weather.storm { color: #ff4d4d; font-weight: 800; }
@@ -395,6 +395,8 @@
     <div class="seg" id="mode-btns"><button data-mode="solo">Solo</button><button data-mode="grid">Full grid (22 cars)</button></div>
     <div class="seg" id="diff-row"><span id="diff-btns"><button data-diff="easy">Easy</button><button data-diff="medium">Medium</button><button data-diff="hard">Hard</button></span></div>
     <div class="seg" id="weather-btns"><span class="lbl">WEATHER</span><button data-weather="sunny">Sunny</button><button data-weather="cloudy">Cloudy</button><button data-weather="rainy">Rainy</button><button data-weather="snowy">Snowy</button><button data-weather="hurricane" class="storm">Hurricane</button></div>
+    <div class="seg" id="time-btns"><span class="lbl">TIME</span><button data-time="track">Circuit's own</button><button data-time="day">Day</button><button data-time="dusk">Sunset</button><button data-time="night">Night</button></div>
+    <div class="seg" id="gfx-btns"><span class="lbl">GRAPHICS</span><button data-gfx="high">High</button><button data-gfx="low">Low (smoother)</button></div>
     <div class="team-title" id="driver-title">Choose your team</div>
     <div id="team-grid"></div>
     <button class="btn primary" id="btn-start">START RACE</button><br>
@@ -457,6 +459,7 @@
 <script src="js/wheel.js"></script>
 <script src="js/dancer.js"></script>
 <script src="js/weather.js"></script>
+<script src="js/fx.js"></script>
 <script src="js/peerjs.min.js"></script>
 <script src="js/net.js"></script>
 <script src="js/firebase-config.js"></script>
